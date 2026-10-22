@@ -1,0 +1,4 @@
+interface:
+  display_name: "UGC video analyzer"
+  short_description: "Break a sample ad video into hook, scenes, text, product moments and style"
+  default_prompt: "Use $ugc-video-analyzer to analyze the sample video before planning the replica."

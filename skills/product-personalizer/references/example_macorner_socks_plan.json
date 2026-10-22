@@ -1,0 +1,106 @@
+{
+ "url": "https://macorner.co/products/fck-off-im-reading-funny-sock-for-book-blub-reading-lovers-personalized-socks-maeuhpmto",
+ "out": "/mnt/session/outputs/personalizer/socks_run",
+ "steps": [
+  {
+   "action": "click_text",
+   "text": "For Women",
+   "exact": false,
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 800
+  },
+  {
+   "action": "click_text",
+   "text": "US 4-6",
+   "exact": false,
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 800
+  },
+  {
+   "action": "click",
+   "selector": "div.swatch-container >> nth=0 >> div:nth-of-type(1)",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 500
+  },
+  {
+   "action": "click",
+   "selector": "div.swatch-container >> nth=1 >> div:nth-of-type(1)",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 500
+  },
+  {
+   "action": "click",
+   "selector": "form.personalized-form .ant-select-selector",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 600
+  },
+  {
+   "action": "click_text",
+   "text": "Do Not Disturb",
+   "exact": false,
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 500
+  },
+  {
+   "action": "click",
+   "selector": "div.swatch-container >> nth=2 >> div:nth-of-type(5)",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 500
+  },
+  {
+   "action": "fill",
+   "selector": "input[placeholder='Example: Alex']",
+   "value": "LILY",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 3000
+  },
+  {
+   "action": "click",
+   "selector": "text=Preview >> visible=true",
+   "snapshot": true
+  },
+  {
+   "action": "wait",
+   "ms": 3000
+  },
+  {
+   "action": "capture",
+   "selector": "canvas.lower-canvas",
+   "file": "preview.png"
+  },
+  {
+   "action": "screenshot",
+   "selector": "form.personalized-form",
+   "file": "form_filled.png"
+  }
+ ],
+ "_notes": [
+  "Verified working on 19 Oct 2026 (20/20 steps, 40 s).",
+  "Quote options: Fuck Off, I'm Reading | Do Not Disturb - I'm Reading | Go Away, I'm Reading | Shhh... I'm Reading | If You Can Read This, Shhh... I'm Reading | If You Can Read This, Bring Me A Book",
+  "Animal tile 5 (rabbit) artwork shows a raised middle finger: do NOT use it in ads; check every animal at full size before choosing."
+ ]
+}

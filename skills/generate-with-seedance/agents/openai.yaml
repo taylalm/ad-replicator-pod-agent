@@ -1,0 +1,4 @@
+interface:
+  display_name: "Seedance 视频生成"
+  short_description: "通过方舟 Seedance API 提交并查询视频生成任务"
+  default_prompt: "Use $generate-with-seedance to generate a video after confirming the final storyboard."

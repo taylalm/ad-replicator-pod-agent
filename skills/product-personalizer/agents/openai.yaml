@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product personalizer"
+  short_description: "Fill the product page personalizer in a headless browser and capture the preview"
+  default_prompt: "Use $product-personalizer to create the personalized product preview for the replica."

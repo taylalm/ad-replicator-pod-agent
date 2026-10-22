@@ -1,0 +1,61 @@
+# UGC ad shot patterns for Seedance 2.5 prompts
+
+Goal: clips that cut together like the sample (same purpose per shot, same pacing) but show the client's personalized product on new AI people. Captions, end card and disclaimer are added later by video-assembly, so clips carry **no text**.
+
+## Prompt skeleton (per clip, 5-10 s, 1-3 shots)
+
+```
+@Image1 is <PERSON>: <age, hair, outfit>; the same person appears in every shot, consistent face and clothes.
+@Image2 is the personalized <PRODUCT>: <what is printed/personalized>; the artwork, colours and the name <NAME> must look exactly as shown in @Image2, legible, not deformed, not mirrored.
+<One sentence: authentic phone-shot UGC video, vertical 9:16, natural daylight, lived-in home, handheld, realistic skin and fabric, no studio look.>
+0-4s: [medium shot, static] <action that mirrors sample scene N: what the person does, where the product is, which part of it faces the camera>.
+4-8s: [close-up, slow push-in] <product detail: the personalized area fills the frame for at least 2 seconds, in focus>.
+Keep the product the same size and design in every shot. Neutral, pleasant expressions. No subtitles, no on-screen text, no captions, no logos, no watermarks, no other brands.
+```
+
+## Mapping sample purposes to shots
+
+| Sample purpose | What the clip must show | Typical framing |
+|---|---|---|
+| hook | the person in a relatable situation; the product appears or is revealed within 1-2 s | medium-wide, eye level, static or slight handheld |
+| personalization | the personalized area (name, photo, artwork) large and in focus for 2+ s | close-up, shallow depth of field |
+| product_detail | material, pattern, stitching, how it is worn or used | close-up, low angle or top-down |
+| lifestyle_social_proof | the product in everyday use at home | medium, handheld, natural light |
+| gifting_unboxing | hands open a box/tissue to reveal the product | top-down close-up, handheld |
+| product_hero | the whole product laid out, full design visible | flat lay, slow push-in |
+| cta | not generated: the end card is rendered by video-assembly | - |
+
+## Shots with several personalized items: one edit per product, then merge
+
+Video and image models mix names and portraits when one generation carries several personalized products, and pasted or warped artwork (print_overlay.py) looks fake. Proven method (Case A, 21 Oct 2026):
+1. Plain still (generate-with-seedream 5.0-pro, 2K): the scene and people with PLAIN products, each a clearly different solid colour matching its artwork background, at real size (state it; e.g. 50 x 60 inch blankets cocooning each child from chin to past the toes, hems pooling on the couch). Check size and faces before going on.
+2. One Seedream edit per product, ALWAYS on the plain still (never chain edits: each edit re-renders the picture and erases earlier prints), with exactly two inputs: the plain still and that product's personalizer image. Prompt: "Edit image 1. Change only the <colour> <product> of <owner>: print on its outer surface exactly the design of image 2 - <the cartoon in words>, and only the name <Name> ... following the folds and drape of the fabric, at the real scale of <size>. Keep everything else in image 1 exactly unchanged: the other products stay completely plain with no print and no text, every face, pose, background, light and framing."
+3. Merge: `scripts/edit_merge.py --base plain.png --out merged.png --item "<description>|<edit>|<personalizer preview>" ...` takes each product from its own edit by colour mask. Zoom into every product: its own portrait and name only, correctly spelled. Redo only the failing product's edit.
+4. Animate the merged still with generate-with-seedance in first-frame mode (`--first-frame`, ratio adaptive) and small motion; the prints stay because nothing on them is regenerated from scratch. If the privacy filter refuses a close-up of photoreal children, step the framing back a little.
+5. Run ugc-quality-gate clip_check.py on the clip.
+For folded or stacked products, the plain still shows the folds at real thickness (about 1 cm per layer for fleece/sherpa); each edit prints that fold with its own names.
+Reference mode with several products (person photos + personalizer images) is the fallback when no plain still is possible; it leaves stray names. `scripts/print_overlay.py` stays for layout checks only, never as a video input.
+
+## Rules of thumb
+
+- **Physical realism for wearables.** Say who wears which item and that each foot (hand) wears exactly one: "Harper wears the personalized pair, one sock on each foot; Willow wears plain cream socks". Never ask for one pair to appear on two people in the same shot (the model then doubles the socks up on one foot). An item nobody wears is described as empty, lying flat and collapsed on the surface, no feet inside, cuffs flat; never "soles up" alone, which makes the model stand empty socks up like invisible feet. Show soles to the camera on a person's raised feet instead.
+
+- **Real product size.** Seedance has no sense of scale: a blanket comes out towel-sized unless the prompt states the physical size and a scale cue. Put the chosen size in every product shot in words a camera understands: "the blanket is 50 x 60 inches (127 x 152 cm): held up by an 8-year-old it is taller than the child and wider than their arm span, the bottom edge touches the floor; wrapped, it covers the child from shoulders to feet with fabric to spare; folded, the stack is as wide as the couch cushion". Attach the product page's size chart and any gallery photo that shows the product on furniture or with a person as `texture`/`setting` references and say "size relative to people as in @ImageN".
+- **Blankets wrap, they do not lie flat.** The sample's blankets envelop the children: pulled up around the shoulders, bunched in the lap, spilling over the couch edge to the floor; the child is inside the blanket, not under a flat sheet. Say it: "each child is cocooned in their own blanket pulled up to the shoulders, the blanket bunched around them with folds and the sherpa edge turned out, the lower part draping over the couch edge toward the floor; the printed portrait sits on the fabric over the lap/chest and faces the camera". Attach the sample's scene keyframe as a `staging` reference and say "framing, how the blankets wrap and drape, and the scale relative to the children as in @ImageN; the printed design itself follows @Image2".
+- **Faces stay visible.** When a person holds the product up, the top edge stays at chest or shoulder height so the face is fully visible above it (as in the sample); never let the product cover a face. Say it explicitly: "she holds the blanket at chest height; her whole face is visible above the top edge".
+
+- **The product beats the sample.** The website preview (`@Image2`) defines the layout: which sole carries the quote and which the animal + name, where the portrait sits, the leg pattern, cuff and toe colours. Restate that layout in words in every product shot ("left sole: the quote text; right sole: the owl and the name NORA; leg: the bookshelf pattern") and add "never mirrored or swapped". If the sample shows the product the other way round, follow the website, not the sample.
+- **Copy the sample's world.** Setting, season and decor (a Christmas tree and fairy lights if the sample has them), time of day, furniture style, number of people and their ages come from `analysis.json`; only the product, the people themselves, the names and the brand change.
+- **Texture shots** use the product-page gallery images as `texture` references: "the sock is stretched between two hands so the bookshelf pattern of @Image3 fills the frame", "a hand strokes the fleece; the sherpa lining of @Image3 folds over at the edge". One texture clip per product, 4-5 s.
+- **Audio**: clips may generate natural sound only when the plan sets `"audio": true` and the prompt says "no music, no BGM; only room tone and <children giggling / fabric rustle>"; music is added in assembly from the client's track.
+
+- One person per clip unless the sample shows two; children appear with a parent or alone at home, never in unsafe situations.
+- Products: a sock sole faces the camera when the personalization is on the sole; a blanket is held up or spread so the printed cartoon and name face the camera; keep text unmirrored.
+- Photo/avatar products (blankets, pillows, mugs with a printed portrait): every product shot must show the portrait. Write it explicitly: "the large cartoon portrait of the child printed in the middle of the blanket, exactly as in @Image2, faces the camera and is fully visible; the name pattern surrounds it". Clips whose product shows only the name pattern without the portrait fail C2 and must be regenerated before assembly; prefer one shot where the blanket is held flat toward the camera.
+- Say "the same person as @Image1" in every clip that reuses a person, and "the product exactly as @Image2" in every product shot.
+- Keep each shot 3-5 s; two or three shots per clip; hard cuts between shots ("at the 4-second mark, hard cut to ...").
+- Do not describe prices, offers, brand names or captions in the prompt.
+- Match the sample's mood words from `analysis.style` (look, lighting, palette) but not its brand, UI or watermark.
+- Faces: friendly everyday look, no glamour lighting; avoid "perfect", "stunning"; prefer "natural", "relaxed".
+- When a clip fails C6 (product deformed/illegible), simplify: fewer shots, product closer and still, "product stays rigid and flat, no hands covering the artwork".
+- When a clip fails C1 (person looks unnatural), reduce motion ("sits still, small natural movements") and keep the face medium-sized, not extreme close-up.

@@ -1,0 +1,44 @@
+# Secrets: keys come only from environment variables
+.env*
+!.env.example
+*.pem
+*.key
+
+# Internal working notes (kept on the build machine, not shared)
+docs/
+tests/
+agent/agent_config_v*.json
+agent/system_prompt_v*.md
+ui/fixtures/
+ui/web/e2e/
+ui/web/playwright.config.ts
+
+# Run outputs, job data and session logs (large; may hold presigned links and client media)
+runs/
+ui/data/
+ui/screenshots/
+ui/.video-tmp/
+ui/*.mp4
+ui/*.webm
+dist/
+deploy/vefaas/dist/
+
+# Client media (share separately, not through git)
+assets/client/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Web build output and dependencies (ui/web/.gitignore covers the rest)
+node_modules/
+ui/web/.next/
+ui/web/out/
+ui/web/test-results/
+
+# OS
+.DS_Store
+
+# Logs
+*.log

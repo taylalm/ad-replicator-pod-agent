@@ -1,0 +1,53 @@
+{
+  "summary": "Silent 20 s POV meme ad for personalized book-lover crew socks: one persistent joke caption over seven quick lifestyle shots that keep revealing the personalized sole (cartoon avatar + name AMELIA, 'SHHH... I'M READING').",
+  "format": "POV meme caption + product showcase montage (no voiceover, no end card)",
+  "duration_s": 19.87,
+  "hook": {
+    "start": 0.0,
+    "end": 3.4,
+    "type": "pov_text_plus_reveal",
+    "text": "POV: You tried talking to her mid chapter 💀",
+    "description": "Woman reading on a couch lifts one foot toward the camera at about 1 s, revealing the sole message 'SHHH... I'M READING' as the punchline to the POV caption."
+  },
+  "scenes": [
+    {"index": 1, "start": 0.0, "end": 3.4, "shot": "medium-wide, eye level", "camera": "static", "setting": "cozy living room, grey couch, bookshelf, plants", "description": "Woman reading a novel on the couch; at about 1 s she raises her foot so the sole fills the frame.", "product_visible": true, "personalization_visible": "sole message 'SHHH... I'M READING'", "purpose": "hook"},
+    {"index": 2, "start": 3.4, "end": 6.2, "shot": "close-up of both soles, foreground", "camera": "static, shallow depth of field", "setting": "bed with knit blanket, warm lamp light", "description": "Smiling woman reading in bed with both soles toward the camera: left sole shows a cartoon avatar and the name AMELIA, right sole the 'SHHH... I'M READING' message.", "product_visible": true, "personalization_visible": "custom cartoon avatar + name AMELIA", "purpose": "personalization"},
+    {"index": 3, "start": 6.2, "end": 8.5, "shot": "close-up of legs, standing", "camera": "static, low angle", "setting": "living room rug", "description": "Hands pull the socks up the calves, showing the all-over pattern of book stacks, glasses, teacups and snowdrop flowers.", "product_visible": true, "personalization_visible": "none (pattern detail)", "purpose": "product_detail"},
+    {"index": 4, "start": 8.5, "end": 11.5, "shot": "medium, feet in foreground", "camera": "static", "setting": "couch, book open on knees", "description": "Woman with glasses reads an open book with both soles toward the camera, repeating the avatar + name and message.", "product_visible": true, "personalization_visible": "avatar + AMELIA", "purpose": "personalization"},
+    {"index": 5, "start": 11.5, "end": 14.3, "shot": "top-down close-up", "camera": "handheld", "setting": "kraft gift box with white tissue paper", "description": "Hands open tissue paper inside a kraft box to reveal the folded socks, soles up.", "product_visible": true, "personalization_visible": "avatar + AMELIA", "purpose": "gifting_unboxing"},
+    {"index": 6, "start": 14.3, "end": 17.3, "shot": "mirror selfie, feet in foreground", "camera": "handheld phone", "setting": "carpet, cream knit sweater", "description": "Woman sits on the carpet taking a phone selfie in a mirror with the socks in the foreground.", "product_visible": true, "personalization_visible": "avatar + AMELIA (partly)", "purpose": "lifestyle_social_proof"},
+    {"index": 7, "start": 17.3, "end": 19.87, "shot": "flat lay, slow push-in", "camera": "handheld, slight push-in", "setting": "bed with cream sheets and a patterned quilt", "description": "Pair laid flat side by side showing the full design: pattern on top, avatar + AMELIA and the message on the soles.", "product_visible": true, "personalization_visible": "full design", "purpose": "product_hero"}
+  ],
+  "on_screen_text": [
+    {"start": 0.0, "end": 19.4, "text": "POV: You tried talking to her mid chapter 💀", "position": "top, below the status bar", "style": "white bold sans, black outline, two lines, centred", "role": "hook"}
+  ],
+  "product": {
+    "type": "personalized crew socks (pair)",
+    "features_shown": ["all-over book/teacup/snowdrop pattern", "sole message 'SHHH... I'M READING'", "gift box packaging"],
+    "personalization_elements": ["custom cartoon avatar matching the buyer (hair colour, outfit)", "custom name on the sole (AMELIA)"]
+  },
+  "people": [
+    {"description": "several different young women with long blonde hair, casual cozy outfits (sweaters, lounge wear)", "role": "user / reader", "appears_in_scenes": [1, 2, 3, 4, 6]},
+    {"description": "hands only", "role": "unboxer", "appears_in_scenes": [5]}
+  ],
+  "cta": {"present": false, "form": "none", "text": "", "start": null},
+  "style": {
+    "look": "authentic UGC, phone-shot, natural home settings",
+    "lighting": "soft daylight from windows; warm lamp light in scene 2",
+    "color_palette": "sage and dark green product against cream, beige and wood tones",
+    "pacing": "7 shots in 20 s, average about 2.8 s per shot, hard cuts",
+    "audio": "no audio track in the file"
+  },
+  "do_not_copy": [
+    "TikTok app interface captured in the recording (account row, caption bar, 'See more', search icon)",
+    "the other seller's brand and account name 'Gift Soul'",
+    "the exact sole artwork and the example name AMELIA: replace with the client's own product and personalization"
+  ],
+  "replication_notes": [
+    "Keep the POV joke caption structure but write it for the client's product and audience.",
+    "Every shot must show the personalized area (name/photo/avatar) within the first second of the shot.",
+    "Mix shot types in this order: hook reveal, personalization close-up, pattern detail, lifestyle, unboxing, selfie, flat-lay hero.",
+    "The sample has no CTA or price: the replica should add an end card with price and CTA (client requirement) after the montage.",
+    "Use Seedance 2.5 with each scene as one 3 s clip at 9:16, or the whole sample as @Video1 in edit mode (needs the public HTTPS URL, 4-30 s)."
+  ]
+}

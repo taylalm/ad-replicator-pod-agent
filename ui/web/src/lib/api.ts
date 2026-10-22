@@ -1,0 +1,219 @@
+/** Typed client for the local backend (ui/server). The browser never sees the API key. */
+
+// Same origin by default: next.config.ts forwards /api/* to the backend. NEXT_PUBLIC_API_BASE points elsewhere if needed.
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "").replace(/\/$/, "");
+
+export type StepStatus = "pending" | "running" | "done" | "failed";
+export type JobStatus = "queued" | "running" | "awaiting_approval" | "done" | "failed" | "stopped";
+
+export interface Step {
+  n: number;
+  name: string;
+  status: StepStatus;
+  started_at: string | null;
+  finished_at: string | null;
+  elapsed_s: number | null;
+  latest_message: string | null;
+  reason: string | null;
+  rounds: number;
+}
+
+export interface JobFile {
+  name: string;
+  kind: "image" | "video" | "json" | "md" | "other";
+  step: number;
+  size: number;
+  mtime: number;
+  local_url: string;
+}
+
+export interface Person { name: string; image: string; file: string }
+export interface Product { name: string; image: string; file: string; artwork: string | null; person: string | null }
+export interface ClipRef { id: string; kind?: string | null; file?: string | null; url?: string | null; describe?: string | null }
+export interface Clip {
+  id: string; n: number; file: string; url: string; size: number; scene?: number | string; duration_s?: number; summary?: string;
+  mode?: string | null; prompt?: string | null; prompt_file?: string | null; still_prompt?: string | null;
+  references?: ClipRef[]; still_references?: ClipRef[]; takes?: Array<{ file: string; url: string; mtime?: number }>;
+}
+export interface SessionUpload { ok: boolean; path: string; filename: string; note?: string; file_id: string }
+export interface Final { version: number; file: string; url: string; size: number; frames: string[] }
+export interface Score { score: number | null; reason: string | null; evidence: string | null }
+export interface HardFailure { kind: string; detail: string; evidence?: string }
+export interface QualityRound {
+  round: number;
+  verdict: "PASS" | "FAIL" | string | null;
+  summary: string | null;
+  scores: Record<string, Score>;
+  hard_failures: HardFailure[];
+  routing: Array<Record<string, unknown>>;
+  min_score: number | null;
+  visible_text: string[];
+  model: string | null;
+  sheets: string[];
+  file: string;
+  md: string | null;
+}
+export interface JobError { kind: string; title: string; text: string; next: string; at: string | null; step?: number; code?: string | null
+  resolved?: boolean;
+}
+export interface PaidCalls {
+  seedream: number; seedance: number; evaluator: number; total: number;
+  budget: { seedream: number; seedance: number; evaluator: number };
+  entries: Array<{ step: number; kind: string; id: string | null; status: string | null; note: string | null }>;
+}
+export interface Usage { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number; model_requests: number; tool_calls: number }
+export interface Budget { seedream: number; seedance: number; evaluator: number }
+export interface Reference { file_id: string; filename: string; mount_name?: string; mime_type?: string | null; bytes?: number | null; note?: string; local_name?: string }
+export interface PersonPrompt { name: string | null; file: string | null; prompt: string; model?: string | null; size?: string | null; version?: number | string | null; references?: string[] }
+export interface ClipPrompt { id: string; file: string; prompt: string }
+export interface Prompts { people: PersonPrompt[]; clips: ClipPrompt[] }
+export interface JobInputs {
+  sample_url?: string; product_url?: string; requirements?: string; budget?: Budget;
+  options?: { length_s?: number | null; resolution?: string | null }; auto_approve?: boolean; step_approve?: boolean; message?: string;
+}
+export interface PlanScene { index: number; sample_scene?: number | string; clip?: string; length_s?: number; description?: string; caption?: string | null }
+export interface PlanJson {
+  product?: { name?: string; url?: string };
+  cast?: Array<{ name: string; role?: string; look?: string; image?: string }>;
+  product_options?: Record<string, string>;
+  scenes?: PlanScene[];
+  captions?: string[];
+  end_card?: { product_name?: string; cta?: string; image?: string; price?: string | null };
+  disclaimer?: string;
+  do_not_copy?: string[];
+  paid_call_estimate?: Partial<Budget>;
+}
+export interface AnalysisBrief {
+  summary?: string; duration_s?: number; format?: string;
+  hook?: { start?: number; end?: number; type?: string; text?: string; description?: string };
+  scenes?: Array<{ index: number; start: number; end: number; shot?: string; description?: string; purpose?: string; personalization_visible?: string }>;
+  on_screen_text?: unknown; do_not_copy?: string[];
+}
+export interface ReplayInfo { t: number; total_s?: number; approve_at_s?: number | null; done_at_s?: number | null }
+
+export interface Job {
+  id: string;
+  title: string;
+  created_at: string;
+  demo: boolean;
+  session_id: string | null;
+  inputs: JobInputs;
+  status: JobStatus;
+  awaiting_approval: boolean;
+  awaiting_step?: number | null;
+  prompts?: Prompts;
+  session_phase: string;
+  steps: Step[];
+  current_step: number | null;
+  plan_text: string | null;
+  paid_calls: PaidCalls;
+  files: JobFile[];
+  errors: JobError[];
+  usage: Usage;
+  elapsed_s: number | null;
+  sample_url: string | null;
+  last_agent_message: string | null;
+  thumbnail: string | null;
+  n_events: number;
+  n_events_total: number;
+  people: Person[];
+  products: Product[];
+  clips: Clip[];
+  finals: Final[];
+  final_url: string | null;
+  quality: QualityRound[];
+  analysis: AnalysisBrief | null;
+  plan: PlanJson | null;
+  product: Record<string, unknown> | null;
+  keyframes: string[];
+  scene_frames: string[];
+  replay?: ReplayInfo;
+  syncing?: boolean;
+  production?: Production | null;
+}
+export interface Production {
+  production_s: number; steps: Array<{ n: number; active_s: number }>;
+  // price fields are absent when the backend runs with UI_SHOW_COST=0
+  cost_per_video_usd?: number; cost_total_usd?: number; per_video?: Record<string, number>;
+  video_clips?: Array<{ clip: string; tokens: number; usd: number; how: string }>; notes?: string[];
+  prices?: { source: string };
+}
+
+export interface JobRow {
+  id: string; title: string; created_at: string | null; demo: boolean; status: JobStatus; thumbnail: string | null;
+  current_step: number | null; product_url?: string; elapsed_s?: number | null; verdict?: string | null; paid_total?: number; error?: string;
+  production_s?: number | null; cost_per_video_usd?: number | null;
+}
+
+export interface RawEvent {
+  id: string; type: string; processed_at?: string; index: number; text?: string; name?: string; input_brief?: string;
+  input?: Record<string, unknown>; is_error?: boolean; tool_use_id?: string; stop_reason?: { type: string };
+  model_usage?: Record<string, number>; error?: unknown;
+}
+
+export interface ValidateResult { ok: boolean; reason: string | null; content_type: string | null; size_bytes: number | null; status?: number | null }
+
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { ...init, headers: { "content-type": "application/json", ...(init?.headers || {}) }, cache: "no-store" });
+  } catch {
+    throw new ApiError(0, "backend unreachable");
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = typeof body?.detail === "string" ? body.detail : JSON.stringify(body?.detail ?? body);
+    } catch { /* keep statusText */ }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as T;
+}
+
+export const api = {
+  health: () => request<{ ok: boolean; api_key_present: boolean; demo_jobs: string[] }>("/api/health"),
+  jobs: () => request<{ jobs: JobRow[]; live_running: boolean }>("/api/jobs"),
+  job: (id: string, replayT?: number | null) =>
+    request<Job>(`/api/jobs/${encodeURIComponent(id)}${replayT != null ? `?replay_t=${replayT}` : ""}`),
+  events: (id: string, after: number, replayT?: number | null) =>
+    request<{ events: RawEvent[]; total: number; next: number; has_more: boolean }>(
+      `/api/jobs/${encodeURIComponent(id)}/events?after=${after}${replayT != null ? `&replay_t=${replayT}` : ""}`),
+  validateSample: (url: string) => request<ValidateResult>("/api/validate-sample", { method: "POST", body: JSON.stringify({ url }) }),
+  createJob: (body: {
+    title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string } | null; product_url: string; requirements: string; budget: Budget;
+    options: { length_s: number; resolution: string }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
+  }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
+  uploadReference: async (file: File, note: string): Promise<Reference> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("note", note);
+    const res = await fetch(`${API_BASE}/api/uploads`, { method: "POST", body: fd });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || `Upload failed (${res.status})`);
+    return (await res.json()) as Reference;
+  },
+  uploadToJob: async (id: string, file: File, note: string): Promise<SessionUpload> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("note", note);
+    const res = await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}/references`, { method: "POST", body: fd });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || `Upload failed (${res.status})`);
+    return (await res.json()) as SessionUpload;
+  },
+  message: (id: string, text: string) =>
+    request<{ ok: boolean; demo?: boolean }>(`/api/jobs/${encodeURIComponent(id)}/message`, { method: "POST", body: JSON.stringify({ text }) }),
+};
+
+export function fileUrl(localUrl: string | null | undefined): string {
+  if (!localUrl) return "";
+  if (/^https?:\/\//.test(localUrl)) return localUrl;
+  return `${API_BASE}${localUrl}`;
+}

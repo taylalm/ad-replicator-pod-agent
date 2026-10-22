@@ -1,0 +1,4 @@
+interface:
+  display_name: "Video assembly"
+  short_description: "Stitch clips into a 9:16 ad with captions, end card and AI disclaimer"
+  default_prompt: "Use $video-assembly to assemble the final ad from the generated clips after the edit plan is agreed."

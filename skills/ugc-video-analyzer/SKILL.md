@@ -1,0 +1,49 @@
+---
+name: ugc-video-analyzer
+description: Break down a sample UGC/TikTok ad video into a structured brief (hook, scenes, on-screen text, product and personalization moments, people, CTA, style, what not to copy) for replicating it with new people and the client's own product. Takes a direct HTTPS link to the video file or a local/uploaded file. Use first in the video replication workflow. No billable API calls.
+---
+
+# UGC video analyzer
+
+Two parts: `scripts/analyze.py` does the deterministic extraction (download, probe, scene cuts, keyframes, timestamped contact sheets, audio levels). You then look at the images and write `analysis.json`.
+
+## Workflow
+
+1. Install dependencies (skips if present):
+
+```bash
+bash /mnt/skills/ugc-video-analyzer/scripts/ensure-deps.sh
+```
+
+2. Extract. The source must be a **direct HTTPS link to the video file** (for example a TOS URL) or a local file such as `/mnt/session/uploads/<file>.mp4`:
+
+```bash
+python3 /mnt/skills/ugc-video-analyzer/scripts/analyze.py \
+  --source "https://<bucket>.tos-ap-southeast-1.bytepluses.com/<file>.mp4" \
+  --out /mnt/session/outputs/analysis
+```
+
+   - TikTok, Instagram, YouTube and Facebook page links are rejected: the platforms block downloads from the sandbox. Ask the user for a direct MP4 link or an upload instead. Do not try other download tools.
+   - Takes about 30 s for a 20 s 1080p video. Output: `extraction.json`, `keyframes/scene_XX_*.jpg`, `contact_sheet_XX.jpg` (frames every 0.5 s with timestamps), `watermark_check.jpg`.
+   - The scene detector misses fades and dissolves. If a scene's frames clearly contain several shots, split it in `analysis.json` and say so in `replication_notes`.
+   - If only one scene is detected but the video clearly cuts, rerun with `--scene-threshold 0.2`.
+
+3. Count the distinct on-camera people (cast_count) and note the caption typography (lines, size, position, outline, emoji, offer style) while you look. Look at **every** contact sheet in order, then the keyframes of each scene, then `watermark_check.jpg` (zoomed corners at each scene and the last frame; columns are top-left, top-right, bottom-left, bottom-right). Read on-screen text exactly as shown. Faint corner marks are easy to miss on the contact sheets: report any watermark or logo found in `watermark_check.jpg`, with its corner and time. If `audio` is not null, note that the file has sound; you cannot hear it, so record `"audio": "present, content not checked"` unless the user tells you what it is.
+
+4. Write `/mnt/session/outputs/analysis/analysis.json` following `references/analysis_schema.md`. Use `references/example_socket_analysis.json` as the model for level of detail.
+
+5. Validate, fix until `"ok": true`:
+
+```bash
+python3 /mnt/skills/ugc-video-analyzer/scripts/analyze.py --check /mnt/session/outputs/analysis/analysis.json
+```
+
+6. Report to the user: one-paragraph summary, the scene table (time, shot, purpose), the hook, the cast count, the shot arc, the `keep` list (setting, decor, cast, caption style, pacing) and the `do_not_copy` list, and any warnings from extraction. The replica copies everything in `keep` and changes only product, people, names, brand and wording. Keep `source_url` from `extraction.json`: Seedance reference/edit mode needs that public HTTPS URL.
+
+## Guardrails
+
+- Describe only what is visible. Mark anything uncertain as uncertain; never invent captions, prices or claims.
+- Screen recordings of TikTok include the app interface (account name, caption bar, buttons). That is not part of the ad: list it under `do_not_copy`, never in `on_screen_text`.
+- Other sellers' brands, logos and account names, watermarks (including AI-model marks such as "Veo"), and the sample's own artwork and example names, always go in `do_not_copy`. A model watermark also means the sample itself is AI-generated: note it in `replication_notes`.
+- Describe people by appearance only. Do not identify real people.
+- The extraction makes no paid API calls. Do not call a model API from this skill.

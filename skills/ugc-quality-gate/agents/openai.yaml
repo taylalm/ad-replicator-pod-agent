@@ -1,0 +1,4 @@
+interface:
+  display_name: "UGC quality gate"
+  short_description: "Independent C1-C8 scoring of the generated ad with a vision evaluator model, hard-failure checks and retry routing"
+  default_prompt: "Use $ugc-quality-gate to score the assembled ad against C1-C8 and decide what to redo."

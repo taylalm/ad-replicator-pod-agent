@@ -1,0 +1,4 @@
+interface:
+  display_name: "UGC Seedance prompt craft"
+  short_description: "Write and validate Seedance 2.5 prompts for each ad clip, with AI person and product references"
+  default_prompt: "Use $ugc-seedance-prompt-craft to turn the analysis and the personalized product previews into validated Seedance prompts."

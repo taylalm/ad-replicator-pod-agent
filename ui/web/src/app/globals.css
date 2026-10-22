@@ -1,0 +1,169 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-body);
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-heading: var(--font-display);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-surface: var(--surface);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  --shadow-soft: 0 1px 2px rgb(31 26 23 / 0.04), 0 8px 24px -12px rgb(31 26 23 / 0.18);
+  --shadow-lift: 0 2px 4px rgb(31 26 23 / 0.05), 0 16px 40px -16px rgb(31 26 23 / 0.28);
+}
+
+:root {
+  /* Warm editorial light theme. Brand orange measured from the macorner.co page screenshot: #F06724. */
+  --font-display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-body: "Manrope", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --background: #faf7f2;
+  --foreground: #1f1a17;
+  --surface: #f3eee6;
+  --card: #ffffff;
+  --card-foreground: #1f1a17;
+  --popover: #ffffff;
+  --popover-foreground: #1f1a17;
+  --primary: #f06724;
+  --primary-foreground: #ffffff;
+  --brand: #f06724;
+  --brand-foreground: #ffffff;
+  --brand-soft: #fdeee4;
+  --secondary: #f3eee6;
+  --secondary-foreground: #1f1a17;
+  --muted: #f1ebe3;
+  --muted-foreground: #6b625b;
+  --accent: #f6f0e8;
+  --accent-foreground: #1f1a17;
+  --destructive: #c0392b;
+  --danger: #c0392b;
+  --danger-soft: #fbe9e6;
+  --success: #2f7d4f;
+  --success-soft: #e6f3ea;
+  --warning: #b7791f;
+  --warning-soft: #fbf1dc;
+  --border: #e8e0d5;
+  --input: #ddd4c8;
+  --ring: #f06724;
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: #15120f;
+  --foreground: #f3ede6;
+  --surface: #1c1814;
+  --card: #1f1b17;
+  --card-foreground: #f3ede6;
+  --popover: #231e19;
+  --popover-foreground: #f3ede6;
+  --primary: #f47a3f;
+  --primary-foreground: #1a120c;
+  --brand: #f47a3f;
+  --brand-foreground: #1a120c;
+  --brand-soft: #3a2316;
+  --secondary: #2a241e;
+  --secondary-foreground: #f3ede6;
+  --muted: #2a241e;
+  --muted-foreground: #a69c92;
+  --accent: #2a241e;
+  --accent-foreground: #f3ede6;
+  --destructive: #e26b5c;
+  --danger: #e26b5c;
+  --danger-soft: #3b1f1b;
+  --success: #5fbf86;
+  --success-soft: #1d3326;
+  --warning: #e0a94a;
+  --warning-soft: #3a2d14;
+  --border: #2f2922;
+  --input: #3a332b;
+  --ring: #f47a3f;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  h1, h2 {
+    font-family: var(--font-display);
+    font-variation-settings: "opsz" 48, "SOFT" 30;
+    letter-spacing: -0.01em;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--brand) 25%, transparent);
+  }
+}
+
+@utility font-display {
+  font-family: var(--font-display);
+  font-variation-settings: "opsz" 48, "SOFT" 30;
+  letter-spacing: -0.01em;
+}
+
+@layer utilities {
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-lift { box-shadow: var(--shadow-lift); }
+  .aspect-9-16 { aspect-ratio: 9 / 16; }
+  .scrollbar-thin { scrollbar-width: thin; }
+  .range-brand { accent-color: var(--brand); }
+  .range-brand:focus-visible { outline: 3px solid color-mix(in oklab, var(--brand) 45%, transparent); outline-offset: 4px; border-radius: 9999px; }
+}
+
+/* Markdown content (plan, reports) */
+.prose-plan { @apply text-[15px] leading-relaxed text-foreground; }
+.prose-plan h1, .prose-plan h2 { @apply font-display text-xl font-medium mt-6 mb-2 first:mt-0; }
+.prose-plan h3 { @apply font-display text-lg font-medium mt-5 mb-1.5; }
+.prose-plan h4 { @apply text-base font-semibold mt-4 mb-1; }
+.prose-plan p { @apply my-2; }
+.prose-plan ul { @apply my-2 list-disc pl-5 space-y-1; }
+.prose-plan ol { @apply my-2 list-decimal pl-5 space-y-1; }
+.prose-plan strong { @apply font-semibold; }
+.prose-plan table { @apply my-3 w-full text-sm border-collapse; }
+.prose-plan th { @apply text-left font-semibold text-muted-foreground border-b border-border py-1.5 pr-3; }
+.prose-plan td { @apply align-top border-b border-border/70 py-1.5 pr-3; }
+.prose-plan code { @apply font-mono text-[0.85em] bg-muted px-1 py-0.5 rounded-sm; }
+.prose-plan a { @apply text-brand underline underline-offset-2; }
