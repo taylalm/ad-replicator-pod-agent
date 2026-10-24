@@ -24,6 +24,9 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
     resolution = (options or {}).get("resolution") or "480p"
     if resolution not in ("480p", "720p"):
         resolution = "480p"
+    captions = (options or {}).get("captions") or "full"
+    if captions not in ("full", "cta_only", "none"):
+        captions = "full"
     req = one_line(requirements)
     output_note = f"Output: about {length_s} s, {resolution}, 9:16 vertical."
     if "Output:" not in req:
@@ -36,6 +39,7 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
          f"Seedance tasks {cap(budget.get('seedance'))}, evaluator calls {cap(budget.get('evaluator'))}"),
         f"AUTO_APPROVE: {'yes' if auto_approve else 'no'}",
         f"STEP_APPROVE: {'yes' if step_approve else 'no'}",
+        f"CAPTIONS: {captions}",
     ]
     for r in references or []:
         name = (r.get("mount_name") or r.get("filename") or "").strip()

@@ -42,6 +42,7 @@ bash /mnt/skills/ugc-quality-gate/scripts/ensure-deps.sh
                         "expected": "dark teal socks, otter artwork, quote 'Do Not Disturb - I'm Reading', name LILY on the sole"}],
   "expected_text": ["LILY", "Do Not Disturb - I'm Reading"],
   "captions": ["POV: you tried talking to her mid chapter", "Personalize yours at macorner.co"],
+  "captions_mode": "full",
   "cta_text": "Personalize yours at macorner.co",
   "disclaimer_text": "AI-generated video",
   "setting_brief": "cozy living room / bedroom, soft daylight, authentic phone-shot look",
@@ -67,7 +68,7 @@ python3 /mnt/skills/ugc-quality-gate/scripts/gate.py \
 
    Add `--clip /mnt/session/outputs/07_clips/<id>.mp4` (repeatable) to score clips before assembly, `--max-frames 12` to change the sample density, `--dry-run` to build the contact sheets and print the request without calling the model.
 
-4. Read `report_<tag>.json` / `report_<tag>.md` (the tag is the `--out` folder name, e.g. `round_1`; contact sheets are `quality_<tag>_sheet_NN.jpg`): `verdict` (PASS / FAIL), `scores` C1-C8 with reason and evidence (frame timestamps), `hard_failures`, `routing` (which step to redo for each failure), `visible_text` (what the evaluator read on the product), `disputed_failures` (name/text claims - misspelled, mirrored - that a second reading of full-size frames at the evidence timestamps did not support: most evidence frames must show the problem; these are not hard failures, but mention them in the delivery note), `second_opinion_calls`. Captions covering a face or the personalized design are hard failures (`caption_covers_face`, `caption_covers_personalization`). Look at the contact sheets yourself only to understand a failure, not to overrule the gate.
+4. Read `report_<tag>.json` / `report_<tag>.md` (the tag is the `--out` folder name, e.g. `round_1`; contact sheets are `quality_<tag>_sheet_NN.jpg`): `verdict` (PASS / FAIL), `scores` C1-C8 with reason and evidence (frame timestamps), `hard_failures`, `routing` (which step to redo for each failure), `visible_text` (what the evaluator read on the product). Set `captions_mode` (full, cta_only or none) from the brief's CAPTIONS line so an ad without text is not marked down for it. `disputed_failures` (name/text claims - misspelled, mirrored - that a second reading of full-size frames at the evidence timestamps did not support: most evidence frames must show the problem; these are not hard failures, but mention them in the delivery note), `second_opinion_calls`. Captions covering a face or the personalized design are hard failures (`caption_covers_face`, `caption_covers_personalization`). Look at the contact sheets yourself only to understand a failure, not to overrule the gate.
 
 5. Act on the routing: C1 -> regenerate the AI person image(s); C2/C7 -> personalizer run or the clip prompt; C3-C6 -> the failing clip's Seedance prompt; C8 -> the edit plan (end card / captions). Maximum 3 retries per item; then deliver the best attempt flagged for human review. Keep every round's report (`round_1`, `round_2`, ...).
 

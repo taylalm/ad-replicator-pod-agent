@@ -27,7 +27,7 @@ It contains `run.sh`, the backend, the built web pages, the recorded demo run, r
    |---|---|
    | `ARK_API_KEY` | The ModelArk API key the agent runs with (the same key as today). |
    | `UI_BASIC_AUTH` | `<username>:<password>` for the sign-in prompt you share with the client. Leaving it empty makes the site public: don't. |
-   | `UI_DOWNLOAD_MAX_BYTES` | Optional, default `600000`. Files larger than this are streamed from ModelArk storage instead of being copied to the instance. |
+| `UI_DOWNLOAD_MAX_BYTES` | Optional, default `600000`. Files larger than this are streamed from ModelArk storage instead of being copied to the instance. |
 
 3. **Upload the ZIP and click Release.**
 4. **API Gateway trigger.**

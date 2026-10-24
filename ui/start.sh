@@ -26,6 +26,8 @@ fi
 mkdir -p data/jobs
 # prices per video are hidden on the local site; UI_SHOW_COST=1 shows them
 export UI_SHOW_COST="${UI_SHOW_COST:-0}"
+# older agent sessions (removed example runs, expired files) are not re-added to the list
+export UI_DISCOVER_AFTER="${UI_DISCOVER_AFTER:-2026-10-22T00:00:00Z}"
 if [ "${UI_DEV:-0}" = "1" ]; then
   # development: backend on :8787, Next dev server on :3000 forwarding /api/* to it (hot reload)
   echo "[start] backend on http://localhost:8787"

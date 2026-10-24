@@ -194,6 +194,9 @@ def build_messages(ctx, sheets, clip_sheets, video_info, deterministic):
              f"Expected personalization: {json.dumps(ctx.get('product_previews', []), ensure_ascii=False)}",
              f"Expected text that must appear exactly: {ctx.get('expected_text', [])}",
              f"Captions burned into the video (expected): {ctx.get('captions', [])}",
+             {"none": "On-screen text: the client chose NO captions. Do not penalize missing captions; judge C4 on the visual hook only and C8 on the outro.",
+              "cta_only": "On-screen text: the client chose only a final call-to-action line. Do not penalize missing captions elsewhere; C4 judges the visual hook."}
+             .get(ctx.get("captions_mode", "full"), "On-screen text: full captions as planned."),
              f"CTA expected: {ctx.get('cta_text', '')} | Disclaimer expected: {ctx.get('disclaimer_text', '')} "
              "(the disclaimer is a small text pill burned in by our own editor, usually near the top; it is expected and is NOT a watermark or logo)",
              f"Client brand: {ctx.get('client_brand', 'macorner')}. The closing outro card with this brand's logo, service badges and AI-performer note is the client's own fixed outro, appended on purpose: it is correct and never other_brand, and it counts as part of the CTA together with any approved offer lines {ctx.get('offer_lines', [])}.",

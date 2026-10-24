@@ -72,6 +72,7 @@ python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outpu
 - Audio: `keep_clip_audio` keeps the clips' own sound (for example natural sound generated with the clips); `music` is looped and faded out before the outro; `sfx` entries are placed at `start` seconds. All present sources are mixed. Without any source the track is silent, which the client treats as a failure, so always provide at least music from the uploads.
 - `disclaimer`: a small pill shown over the scenes (not over the outro). Not needed when the outro carries the AI line.
 - `preview_frames`: number of JPG stills saved next to the output for review and the quality gate.
+- `clean_output`: a second render of the same cut with no captions, insets, arrows or disclaimer (sound and outro kept), for the client to re-edit with their own footage and text. Default `<output>_clean.mp4`; `false` skips it.
 
 ## Guardrails
 

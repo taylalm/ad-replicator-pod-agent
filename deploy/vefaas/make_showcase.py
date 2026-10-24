@@ -61,7 +61,7 @@ for job_id in IDS:
     job = json.loads((src / "job.json").read_text())
     events = store.read_events(src)
     derived = derive_job(job, events, src / "files")
-    keep_video = {c["file"] for c in derived["clips"]} | {"final.mp4"}
+    keep_video = {c["file"] for c in derived["clips"]} | {"final.mp4", "final_clean.mp4"}
     if not link_ok(str((job.get("inputs") or {}).get("sample_url", ""))):
         keep_video |= {"sample.mp4", "source.mp4"}  # otherwise the player streams the sample from its public link
     if derived.get("finals") and not (src / "files" / "final.mp4").exists():
@@ -70,9 +70,9 @@ for job_id in IDS:
     job["files_index"] = {}
     (dst / "job.json").write_text(json.dumps(job, indent=1))
     (dst / "events.json").write_text(json.dumps({"events": [trim(e) for e in events]}))
-    for extra in ("costs.json", "cost_cache.json"):
-        if (src / extra).exists():
-            shutil.copyfile(src / extra, dst / extra)
+    if (src / "costs.json").exists():  # times only: no prices or amounts leave the operator's machine
+        c = json.loads((src / "costs.json").read_text())
+        (dst / "costs.json").write_text(json.dumps({k: c.get(k) for k in ("production_s", "steps", "waiting_s")}))
     kept = shrunk = skipped = 0
     for p in sorted((src / "files").iterdir()):
         if not p.is_file() or p.name.startswith("."):

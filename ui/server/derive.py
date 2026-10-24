@@ -700,6 +700,11 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
     inputs = job.get("inputs") or {}
     auto_approve = bool(inputs.get("auto_approve"))
     st = derive_status(events, parsed, auto_approve, bool(inputs.get("step_approve")))
+    if job.get("example") and not events:
+        # a curated example (final ad and its real inputs, no agent event log): show it as a finished job
+        st = {"status": "done", "awaiting_approval": False, "awaiting_step": None, "phase": "idle"}
+        for s in parsed["steps"]:
+            s["status"] = "done"
     visible_steps = None
     if replay_t is not None:
         visible_steps = {s["n"] for s in parsed["steps"] if s["status"] != "pending"}
@@ -754,7 +759,7 @@ def _production(job_dir: Path) -> Optional[dict]:
     import os
     data = read_json(job_dir / "costs.json") if (job_dir / "costs.json").exists() else None
     if isinstance(data, dict) and os.environ.get("UI_SHOW_COST", "1") == "0":
-        return {"production_s": data.get("production_s"), "steps": data.get("steps")}
+        return {"production_s": data.get("production_s"), "steps": data.get("steps"), "waiting_s": data.get("waiting_s")}
     return data
 
 

@@ -50,6 +50,7 @@ class Budget(BaseModel):
 class Options(BaseModel):
     length_s: int = Field(20, ge=5, le=60)
     resolution: str = "480p"
+    captions: str = Field("full", pattern="^(full|cta_only|none)$")  # on-screen text: all captions, only the call to action, or none
 
 
 class NewJob(BaseModel):
@@ -327,6 +328,85 @@ def get_file(job_id: str, name: str, request: Request):
                 return RedirectResponse(url, status_code=307)
         raise HTTPException(404, "file not found")
     return _range_response(path, request)
+
+
+PART_GROUPS = ("final", "clips", "stills", "people", "products", "plan")
+
+
+def _job_parts(job_id: str) -> List[dict]:
+    """The pieces a client may want to re-edit with: final (with and without text), current clip takes, first-frame
+    stills, AI people, product previews and the edit plan. Each: {group, name, url}."""
+    d = store.job_dir(job_id)
+    if d is None:
+        raise HTTPException(404, "job not found")
+    job = store.read_job(d)
+    derived = derive_job(job, store.read_events(d), store.files_dir(d))
+    names = {f["name"] for f in derived.get("files", [])}
+    url = lambda n: f"/api/jobs/{job_id}/files/{n}"  # noqa: E731
+    parts, seen = [], set()
+
+    def add(group, name):
+        if name and name in names and name not in seen:
+            seen.add(name)
+            parts.append({"group": group, "name": name, "url": url(name)})
+
+    final = (derived.get("finals") or [{}])[-1].get("file") if derived.get("finals") else None
+    add("final", "final.mp4" if "final.mp4" in names else final)
+    if "final_clean.mp4" in names:  # the delivered text-free master; older takes' clean copies are left out
+        add("final", "final_clean.mp4")
+    elif final and final.replace(".mp4", "_clean.mp4") in names:
+        add("final", final.replace(".mp4", "_clean.mp4"))
+    for c in derived.get("clips", []):
+        add("clips", c.get("file"))
+        for r in c.get("references") or []:
+            if r.get("kind") == "first_frame":
+                add("stills", r.get("file"))
+    for n in sorted(names):
+        if n.startswith("still_") and n.lower().endswith((".png", ".jpg", ".jpeg")):
+            add("stills", n)
+    for p in derived.get("people", []):
+        add("people", p.get("file") or Path(str(p.get("image") or "")).name)
+    for pr in derived.get("products", []):
+        add("products", pr.get("file") or Path(str(pr.get("image") or "")).name)
+    for n in ("edit_plan.json",):
+        add("plan", n)
+    return parts
+
+
+@app.get("/api/jobs/{job_id}/parts")
+def job_parts(job_id: str):
+    return {"parts": _job_parts(job_id)}
+
+
+@app.get("/api/jobs/{job_id}/bundle.zip")
+def job_bundle(job_id: str):
+    """Every part in one ZIP, in folders by kind (final/, clips/, stills/, people/, products/, plan/)."""
+    import tempfile
+    import urllib.request
+    import zipfile
+    d = store.job_dir(job_id)
+    job = store.read_job(d) if d else {}
+    parts = _job_parts(job_id)
+    tmp = tempfile.NamedTemporaryFile(prefix=f"{job_id}_", suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", compression=zipfile.ZIP_STORED) as zf:
+        for part in parts:
+            local = store.files_dir(d) / part["name"]
+            arc = f"{part['group']}/{part['name']}"
+            if local.is_file():
+                zf.write(local, arc)
+                continue
+            meta = (job.get("files_index") or {}).get(part["name"]) or {}
+            link = _remote_url(job.get("session_id"), meta.get("id")) if meta.get("remote") else None
+            if link:
+                try:
+                    with urllib.request.urlopen(link, timeout=120) as r:
+                        zf.writestr(arc, r.read())
+                except Exception:
+                    continue
+    from starlette.background import BackgroundTask
+    return FileResponse(tmp.name, media_type="application/zip", filename=f"{job_id}_parts.zip",
+                        background=BackgroundTask(lambda: os.path.exists(tmp.name) and os.unlink(tmp.name)))
 
 
 _REMOTE: Dict[str, tuple] = {}

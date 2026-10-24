@@ -22,23 +22,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-PRICES = {
-    "source": "https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing (Online inference, USD), read 22 Oct 2026",
-    "currency": "USD",
-    # Seedance 2.5 (dreamina-seedance-2-5-260628), per million tokens, input without video
-    "seedance_per_m": {"480p": 10.70, "720p": 10.70, "1080p": 11.7},
-    # Seedance 2.5, input with a reference video
-    "seedance_with_video_per_m": {"480p": 6.40, "720p": 6.40, "1080p": 7.0},
-    # Seedream 5.0 pro (dola-seedream-5-0-pro-260628), per output image
-    "seedream_image_small": 0.045,   # <= 2.61 million pixels ("1.5K or lower")
-    "seedream_image_large": 0.09,    # > 2.61 million pixels
-    "seedream_tier_pixels": 2_610_000,
-    # GLM-5.3 Flash (glm-5-3-flash-260828), per million tokens
-    "agent_input_per_m": 0.15, "agent_cached_per_m": 0.03, "agent_output_per_m": 0.5,
-    # seed-2-0-lite-260428, prompt <= 128K, per million tokens; per call estimate for the evaluator (about 15K in / 1.5K out)
-    "evaluator_input_per_m": 0.25, "evaluator_output_per_m": 2.00,
-    "evaluator_call_estimate": round(15_000 * 0.25 / 1e6 + 1_500 * 2.00 / 1e6, 4),
-}
+def _load_prices() -> dict:
+    """List prices live in prices_local.json next to this file: kept on the operator's machine only (not in git, not in
+    the deployed package). Without it every amount is 0 and only times and usage are reported."""
+    p = Path(__file__).with_name("prices_local.json")
+    if p.exists():
+        return json.loads(p.read_text())
+    zero = {"source": "not configured (no prices_local.json)", "currency": "USD", "seedance_per_m": {"480p": 0, "720p": 0, "1080p": 0},
+            "seedance_with_video_per_m": {"480p": 0, "720p": 0, "1080p": 0}, "seedream_image_small": 0, "seedream_image_large": 0,
+            "seedream_tier_pixels": 2_610_000, "agent_input_per_m": 0, "agent_cached_per_m": 0, "agent_output_per_m": 0,
+            "evaluator_input_per_m": 0, "evaluator_output_per_m": 0, "evaluator_call_estimate": 0}
+    return zero
+
+
+PRICES = _load_prices()
 SEEDANCE_DIMS = {"480p": (480, 864), "720p": (720, 1280), "1080p": (1080, 1920)}
 STEP_RE = re.compile(r"STEP\s+(\d+)\s*/\s*(\d+)\s*:\s*([^\n]+?)\s+-\s+(started|done|failed|skipped)\b", re.I)
 
@@ -196,10 +193,14 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
     calls = read_paid_calls(paid_path)
     b = {k: {"first_pass": 0.0, "total": 0.0, "count_first": 0, "count_total": 0} for k in ("seedance", "seedream", "evaluator", "agent")}
     seedance_tokens = 0
+    mu = {"agent": {"input_tokens": 0, "cached_tokens": 0, "output_tokens": 0, "requests": 0, "usd": 0.0},
+         "seedance": {"tasks": 0, "tokens": 0, "usd": 0.0},
+         "seedream": {"images_small": 0, "images_large": 0, "usd": 0.0},
+         "evaluator_gate": {"calls": 0, "usd": 0.0}, "evaluator_clip_checks": {"calls": 0, "usd": 0.0}}
     for c in calls:
         status = str(c.get("status", "")).lower()
         rec_status = str((cache.get(str(c.get("id", ""))) or {}).get("status") or "").lower()
-        if rec_status:  # a Seedance task's own record (logged as "submitted" by batch runs) is the truth
+        if rec_status in ("succeeded", "failed", "cancelled", "expired"):  # a finished task's own record is the truth
             status = rec_status
         if str(c.get("kind", "")).lower() == "clip_check":
             status = "succeeded"  # a check is billed whatever its verdict (agents log the exit code or verdict here)
@@ -215,15 +216,23 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
                 dur = rec.get("duration") or (int(m.group(1)) if (m := re.search(r"(\d+)\s*s\b", note)) else 5)
                 w, h = SEEDANCE_DIMS.get(res, (480, 864))
                 tokens = dur * w * h * (rec.get("framespersecond") or 24) / 1024
-            price = PRICES["seedance_per_m"].get(res, 10.70) * tokens / 1e6
+            price = PRICES["seedance_per_m"].get(res, PRICES["seedance_per_m"]["480p"]) * tokens / 1e6
             seedance_tokens += int(tokens)
+            mu["seedance"]["tasks"] += 1
+            mu["seedance"]["tokens"] += int(tokens)
+            mu["seedance"]["usd"] += price
             t = rec.get("created_at") or _first_mention(events, cid)
         elif kind == "seedream":
             price = _seedream_price(note)
+            mu["seedream"]["images_large" if price == PRICES["seedream_image_large"] else "images_small"] += 1
+            mu["seedream"]["usd"] += price
             t = _first_mention(events, cid) if not cid.startswith("unrecorded") else None
         elif kind in ("evaluator", "clip_check"):
+            row = mu["evaluator_clip_checks" if kind == "clip_check" else "evaluator_gate"]
             kind = "evaluator"  # per-clip checks use the same evaluator model and price
             price = PRICES["evaluator_call_estimate"]
+            row["calls"] += 1
+            row["usd"] += price
             t = _first_mention(events, cid)
         else:
             continue
@@ -241,6 +250,11 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         usd = (uncached * PRICES["agent_input_per_m"] + cached * PRICES["agent_cached_per_m"] + (u.get("output_tokens") or 0) * PRICES["agent_output_per_m"]) / 1e6
         b["agent"]["total"] += usd
         b["agent"]["count_total"] += 1
+        mu["agent"]["input_tokens"] += uncached
+        mu["agent"]["cached_tokens"] += cached
+        mu["agent"]["output_tokens"] += (u.get("output_tokens") or 0)
+        mu["agent"]["requests"] += 1
+        mu["agent"]["usd"] += usd
         if _in_windows(_ts(e.get("processed_at")), windows):
             b["agent"]["first_pass"] += usd
             b["agent"]["count_first"] += 1
@@ -278,10 +292,44 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         "cost_first_pass_usd": round(sum(v["first_pass"] for v in b.values()), 2),
         "cost_total_usd": round(sum(v["total"] for v in b.values()), 2),
         "breakdown": b, "seedance_tokens": seedance_tokens, "prices": PRICES,
+        "models": _model_rows(mu), "waiting_s": waiting_time(events),
         "notes": ["Evaluator calls are an estimate per call (about 15K input and 1.5K output tokens).",
                   "Seedream input images beyond the first ($0.003 each) are not in the log and are left out.",
                   "List prices; a negotiated contract price list would replace PRICES."],
     }
+
+
+def _model_rows(m: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """One row per model for the internal cost view: what was used, at which list price, and the USD amount."""
+    a, sd, sr, eg, ec = m["agent"], m["seedance"], m["seedream"], m["evaluator_gate"], m["evaluator_clip_checks"]
+    return [
+        {"model": "GLM-5.3 Flash (agent)", "id": "glm-5-3-flash-260828",
+         "usage": f"{a['input_tokens']:,} input + {a['cached_tokens']:,} cached input + {a['output_tokens']:,} output tokens ({a['requests']} requests)",
+         "unit_price": f"${PRICES['agent_input_per_m']} / ${PRICES['agent_cached_per_m']} / ${PRICES['agent_output_per_m']} per 1M tokens", "usd": round(a["usd"], 3)},
+        {"model": "Seedance 2.5 (video)", "id": "dreamina-seedance-2-5-260628",
+         "usage": f"{sd['tasks']} tasks, {sd['tokens']:,} tokens", "unit_price": f"${PRICES['seedance_per_m']['480p']} per 1M tokens (480p/720p)", "usd": round(sd["usd"], 3)},
+        {"model": "Seedream 5.0 pro (images)", "id": "dola-seedream-5-0-pro-260628",
+         "usage": f"{sr['images_small']} images up to 2.6 MP + {sr['images_large']} larger", "unit_price": f"${PRICES['seedream_image_small']} / ${PRICES['seedream_image_large']} per image", "usd": round(sr["usd"], 3)},
+        {"model": "Seed 2.0 lite (quality gate)", "id": "seed-2-0-lite-260428",
+         "usage": f"{eg['calls']} calls (estimate per call)", "unit_price": f"${PRICES['evaluator_input_per_m']} in / ${PRICES['evaluator_output_per_m']} out per 1M tokens", "usd": round(eg["usd"], 3)},
+        {"model": "Seed 2.0 lite (clip checks)", "id": "seed-2-0-lite-260428",
+         "usage": f"{ec['calls']} calls (estimate per call)", "unit_price": f"${PRICES['evaluator_input_per_m']} in / ${PRICES['evaluator_output_per_m']} out per 1M tokens", "usd": round(ec["usd"], 3)},
+    ]
+
+
+def waiting_time(events: List[dict]) -> int:
+    """Seconds the session sat idle waiting for a person: from each idle event to the next user message."""
+    total, idle_at = 0.0, None
+    for e in events:
+        t = _ts(e.get("processed_at"))
+        if t is None:
+            continue
+        if e.get("type") == "session.status_idle":
+            idle_at = t
+        elif e.get("type") == "user.message" and idle_at is not None:
+            total += max(0.0, t - idle_at)
+            idle_at = None
+    return int(total)
 
 
 def _read_range_local(p: Path, start: int, end: int) -> bytes:
@@ -328,8 +376,9 @@ def fetch_seedance_usage(client, job_dir: Path, files_dir: Path) -> int:
     added = 0
     for c in calls:
         cid = str((c or {}).get("id", ""))
-        if not cid.startswith("cgt-") or cid in cache or cid == "_durations":
-            continue
+        done = str((cache.get(cid) or {}).get("status") or "") in ("succeeded", "failed", "cancelled", "expired")
+        if not cid.startswith("cgt-") or (cid in cache and done) or cid == "_durations":
+            continue  # finished records are final; a record saved while the task was still running is fetched again
         try:
             r = client.get(f"/contents/generations/tasks/{cid}")
             cache[cid] = {k: r.get(k) for k in ("usage", "resolution", "ratio", "duration", "framespersecond", "created_at", "status", "model")}

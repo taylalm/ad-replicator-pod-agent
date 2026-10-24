@@ -23,7 +23,7 @@ cp "$ROOT/tools/ma_client.py" "$STAGE/tools/"
 # the recorded demo run (offline replay, "Demo mode" on the history page): left out unless INCLUDE_DEMO=1
 if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R "$ROOT/runs/demo_caseB" "$STAGE/runs/"; fi
 # read-only copies of delivered jobs (ModelArk keeps session files for about a day); SHOWCASE_JOBS overrides the list
-SHOWCASE_JOBS=${SHOWCASE_JOBS:-"job-20261021-114112-7hum job-20261021-131736-l0ge"}
+SHOWCASE_JOBS=${SHOWCASE_JOBS:-"job-20261023-120000-blnk job-20261021-131736-l0ge"}
 if [ -n "$SHOWCASE_JOBS" ]; then
   "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$ROOT/ui/data/jobs" "$STAGE/runs/showcase" $SHOWCASE_JOBS
 fi

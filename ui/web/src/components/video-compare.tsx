@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { Camera, Download, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { fmtClock } from "@/lib/format";
@@ -34,6 +34,28 @@ export function VideoCompare({ sampleSrc, finalSrc, downloadName }: { sampleSrc:
       lead?.removeEventListener("timeupdate", onTime);
     };
   }, [both, sampleSrc, finalSrc]);
+
+  // Save the new ad's current frame as a full-resolution PNG (pause and scrub to the frame first).
+  const saveFrame = useCallback(() => {
+    const v = b.current;
+    if (!v || !v.videoWidth) return;
+    const c = document.createElement("canvas");
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    try {
+      c.getContext("2d")?.drawImage(v, 0, 0);
+      c.toBlob((blob) => {
+        if (!blob) return;
+        const a2 = document.createElement("a");
+        a2.href = URL.createObjectURL(blob);
+        a2.download = `frame_${v.currentTime.toFixed(2).replace(".", "_")}s.png`;
+        a2.click();
+        setTimeout(() => URL.revokeObjectURL(a2.href), 1000);
+      }, "image/png");
+    } catch {
+      window.alert(s.results.saveFrameFailed);
+    }
+  }, [s]);
 
   const toggle = useCallback(async () => {
     const vids = both();
@@ -101,6 +123,12 @@ export function VideoCompare({ sampleSrc, finalSrc, downloadName }: { sampleSrc:
         <Button variant="outline" size="icon-lg" aria-label={muted ? s.results.unmute : s.results.mute} onClick={() => setMuted((m) => !m)} className="rounded-full">
           {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
         </Button>
+        {finalSrc && (
+          <Button variant="outline" size="lg" className="rounded-full" onClick={saveFrame} title={s.results.saveFrameHint}>
+            <Camera className="size-4" />
+            {s.results.saveFrame}
+          </Button>
+        )}
         {finalSrc && (
           <Button variant="outline" size="lg" className="rounded-full" nativeButton={false} render={<a href={finalSrc} download={downloadName ?? "final.mp4"} />}>
             <Download className="size-4" />

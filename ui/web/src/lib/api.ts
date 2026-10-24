@@ -132,7 +132,7 @@ export interface Job {
   production?: Production | null;
 }
 export interface Production {
-  production_s: number; steps: Array<{ n: number; active_s: number }>;
+  production_s: number; steps: Array<{ n: number; active_s: number }>; waiting_s?: number | null;
   // price fields are absent when the backend runs with UI_SHOW_COST=0
   cost_per_video_usd?: number; cost_total_usd?: number; per_video?: Record<string, number>;
   video_clips?: Array<{ clip: string; tokens: number; usd: number; how: string }>; notes?: string[];
@@ -216,6 +216,7 @@ async function sendFile<T>(path: string, file: File, note: string, jobId?: strin
 export const api = {
   health: () => request<{ ok: boolean; api_key_present: boolean; demo_jobs: string[] }>("/api/health"),
   jobs: () => request<{ jobs: JobRow[]; live_running: boolean }>("/api/jobs"),
+  parts: (id: string) => request<{ parts: Array<{ group: string; name: string; url: string }> }>(`/api/jobs/${encodeURIComponent(id)}/parts`),
   job: (id: string, replayT?: number | null) =>
     request<Job>(`/api/jobs/${encodeURIComponent(id)}${replayT != null ? `?replay_t=${replayT}` : ""}`),
   events: (id: string, after: number, replayT?: number | null) =>
@@ -224,7 +225,7 @@ export const api = {
   validateSample: (url: string) => request<ValidateResult>("/api/validate-sample", { method: "POST", body: JSON.stringify({ url }) }),
   createJob: (body: {
     title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string } | null; product_url: string; requirements: string; budget: Budget;
-    options: { length_s: number; resolution: string }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
+    options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none" }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
   }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
   uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>

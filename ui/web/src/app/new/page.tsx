@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 
 const LENGTHS = [15, 20, 30];
 const RESOLUTIONS = ["480p", "720p"] as const;
+const CAPTION_MODES = ["full", "cta_only", "none"] as const;
 const SLIDER_MAX = { seedream: 12, seedance: 12, evaluator: 6 };
 const NO_CAP = 0;
 const DEMO_JOB_ID = process.env.NEXT_PUBLIC_DEMO_JOB_ID || "caseB";
@@ -47,6 +48,7 @@ function NewJobForm() {
   const [req, setReq] = useState("");
   const [length, setLength] = useState(20);
   const [res, setRes] = useState<(typeof RESOLUTIONS)[number]>("480p");
+  const [captions, setCaptions] = useState<(typeof CAPTION_MODES)[number]>("full");
   const [budget, setBudget] = useState({ seedream: NO_CAP, seedance: NO_CAP, evaluator: 3 });
   const [refs, setRefs] = useState<Array<Reference & { pending?: boolean; error?: string; localName: string }>>([]);
   const [autoApprove, setAutoApprove] = useState(false);
@@ -112,7 +114,7 @@ function NewJobForm() {
         title: title.trim() || undefined, product_url: product.trim(), requirements: req.trim(),
         sample_url: sampleMode === "link" ? sample.trim() : "",
         sample_upload: sampleMode === "upload" && sampleFile.ref ? { file_id: sampleFile.ref.file_id, filename: sampleFile.ref.filename, local_name: sampleFile.ref.local_name } : null,
-        budget, options: { length_s: length, resolution: res }, auto_approve: autoApprove, step_approve: stepApprove,
+        budget, options: { length_s: length, resolution: res, captions }, auto_approve: autoApprove, step_approve: stepApprove,
         references: refs.filter((r) => !r.pending && !r.error).map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note })),
       });
       router.push(`/job?id=${job.id}`);
@@ -220,6 +222,10 @@ function NewJobForm() {
         <div className="grid gap-6 sm:grid-cols-2">
           <Segmented label={s.newJob.length.label} options={LENGTHS.map((l) => ({ v: String(l), l: `${l} ${s.newJob.length.unit}` }))} value={String(length)} onChange={(v) => setLength(Number(v))} />
           <Segmented label={s.newJob.resolution.label} options={RESOLUTIONS.map((r) => ({ v: r, l: r }))} value={res} onChange={(v) => setRes(v as (typeof RESOLUTIONS)[number])} />
+        </div>
+        <div className="mt-6">
+          <Segmented label={s.newJob.captions.label} options={CAPTION_MODES.map((m) => ({ v: m, l: s.newJob.captions[m] }))} value={captions} onChange={(v) => setCaptions(v as (typeof CAPTION_MODES)[number])} />
+          <p className="mt-2 text-xs text-muted-foreground">{s.newJob.captions.help}</p>
         </div>
       </Section>
 

@@ -38,6 +38,7 @@ export function JobHeader({ job, title, subtitle, replay }: {
         <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:auto-cols-max sm:grid-flow-col sm:grid-cols-none lg:text-right">
           <Meta label={s.common.createdAt}>{fmtDate(job.created_at)}</Meta>
           <Meta label={s.live.productionTime}>{job.production ? fmtDuration(job.production.production_s) : "–"}</Meta>
+          {job.production?.waiting_s ? <Meta label={s.live.waitingTime}>{fmtDuration(job.production.waiting_s)}</Meta> : null}
           {job.production?.cost_per_video_usd != null && (
             <Meta label={s.live.costPerVideo}>
               <span title={s.live.costTitle(`$${(job.production.cost_total_usd ?? job.production.cost_per_video_usd).toFixed(2)}`)}>${job.production.cost_per_video_usd.toFixed(2)}</span>

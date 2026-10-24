@@ -745,50 +745,57 @@ def main():
             render_caption_layer(png, (width, height), disc["text"], spec)
             layers.append((png, 0.0, content_end if plan.get("outro") else duration))
 
-        cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", base]
-        for png, _, _ in layers:
-            cmd += ["-i", png]
-        music = plan.get("music")
-        inputs = 1 + len(layers)
-        music_index = None
-        if music:
-            cmd += ["-stream_loop", "-1", "-i", music["path"]]
-            music_index = inputs
-            inputs += 1
-        sfx_indexes = []
-        for sfx in plan.get("sfx", []):
-            cmd += ["-i", sfx["path"]]
-            sfx_indexes.append((inputs, sfx))
-            inputs += 1
-        chains, label = [], "0:v"
-        for n, (_, start, end) in enumerate(layers, start=1):
-            out_label = f"v{n}"
-            chains.append(f"[{label}][{n}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[{out_label}]")
-            label = out_label
-        audio_labels = ["[0:a]"] if (keep_audio or not music and not sfx_indexes) else []
-        if music:
-            fade = float(music.get("fade_out", 1.0))
-            fade_at = (content_end if plan.get("outro") and music.get("fade_before_outro", True) else duration)
-            chains.append(f"[{music_index}:a]volume={float(music.get('volume', 0.8))},"
-                          f"afade=t=out:st={max(0.0, fade_at - fade):.3f}:d={fade:.3f}[music]")
-            audio_labels.append("[music]")
-        for k, (idx, sfx) in enumerate(sfx_indexes):
-            delay = int(float(sfx.get("start", 0)) * 1000)
-            chains.append(f"[{idx}:a]volume={float(sfx.get('volume', 1.0))},adelay={delay}|{delay}[sfx{k}]")
-            audio_labels.append(f"[sfx{k}]")
-        if len(audio_labels) > 1:
-            chains.append("".join(audio_labels) + f"amix=inputs={len(audio_labels)}:duration=first:dropout_transition=0:normalize=0[aout]")
-            audio_map = "[aout]"
-        else:
-            audio_map = audio_labels[0] if audio_labels[0] != "[0:a]" else "0:a"
-        video_map = f"[{label}]" if layers else "0:v"
-        if chains:
-            cmd += ["-filter_complex", ";".join(chains)]
-        os.makedirs(os.path.dirname(os.path.abspath(plan["output"])) or ".", exist_ok=True)
-        cmd += ["-map", video_map, "-map", audio_map, "-t", f"{duration:.3f}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", plan["output"]]
-        run(cmd)
+        def render(layers, out_path):
+            cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", base]
+            for png, _, _ in layers:
+                cmd += ["-i", png]
+            music = plan.get("music")
+            inputs = 1 + len(layers)
+            music_index = None
+            if music:
+                cmd += ["-stream_loop", "-1", "-i", music["path"]]
+                music_index = inputs
+                inputs += 1
+            sfx_indexes = []
+            for sfx in plan.get("sfx", []):
+                cmd += ["-i", sfx["path"]]
+                sfx_indexes.append((inputs, sfx))
+                inputs += 1
+            chains, label = [], "0:v"
+            for n, (_, start, end) in enumerate(layers, start=1):
+                out_label = f"v{n}"
+                chains.append(f"[{label}][{n}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[{out_label}]")
+                label = out_label
+            audio_labels = ["[0:a]"] if (keep_audio or not music and not sfx_indexes) else []
+            if music:
+                fade = float(music.get("fade_out", 1.0))
+                fade_at = (content_end if plan.get("outro") and music.get("fade_before_outro", True) else duration)
+                chains.append(f"[{music_index}:a]volume={float(music.get('volume', 0.8))},"
+                              f"afade=t=out:st={max(0.0, fade_at - fade):.3f}:d={fade:.3f}[music]")
+                audio_labels.append("[music]")
+            for k, (idx, sfx) in enumerate(sfx_indexes):
+                delay = int(float(sfx.get("start", 0)) * 1000)
+                chains.append(f"[{idx}:a]volume={float(sfx.get('volume', 1.0))},adelay={delay}|{delay}[sfx{k}]")
+                audio_labels.append(f"[sfx{k}]")
+            if len(audio_labels) > 1:
+                chains.append("".join(audio_labels) + f"amix=inputs={len(audio_labels)}:duration=first:dropout_transition=0:normalize=0[aout]")
+                audio_map = "[aout]"
+            else:
+                audio_map = audio_labels[0] if audio_labels[0] != "[0:a]" else "0:a"
+            video_map = f"[{label}]" if layers else "0:v"
+            if chains:
+                cmd += ["-filter_complex", ";".join(chains)]
+            os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+            cmd += ["-map", video_map, "-map", audio_map, "-t", f"{duration:.3f}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", out_path]
+            run(cmd)
+            return music, sfx_indexes
+
+        music, sfx_indexes = render(layers, plan["output"])
+        clean = plan.get("clean_output", os.path.splitext(plan["output"])[0] + "_clean.mp4")
+        if clean:  # the same cut without any text or inset, for re-editing with the client's own footage and text
+            render([], clean)
 
         previews = []
         count = int(plan.get("preview_frames", 0))
@@ -800,7 +807,7 @@ def main():
                 run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", plan["output"],
                      "-frames:v", "1", "-q:v", "3", frame])
                 previews.append(frame)
-        print(json.dumps({"ok": True, "output": plan["output"], "duration_s": round(duration, 2),
+        print(json.dumps({"ok": True, "output": plan["output"], "clean_output": clean or None, "duration_s": round(duration, 2),
                           "size": f"{width}x{height}", "fps": fps, "clips": len(plan["clips"]),
                           "captions": len(plan.get("captions", [])), "caption_lines": caption_lines, "face_avoidance": moved,
                           "insets": len(plan.get("insets", [])), "end_card": bool(plan.get("end_card")),

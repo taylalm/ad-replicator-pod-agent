@@ -42,3 +42,7 @@ ui/web/test-results/
 
 # Logs
 *.log
+
+# Price tracking stays on the operator's machine
+ui/server/prices_local.json
+tools/cost_report.py

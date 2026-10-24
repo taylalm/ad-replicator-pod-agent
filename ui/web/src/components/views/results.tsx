@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { ChevronDown, FileText, Loader2, Send, Wand2 } from "lucide-react";
 import { useState } from "react";
 import { ClipWorkbench } from "@/components/clip-workbench";
+import { DownloadParts } from "@/components/download-parts";
 import { PaidCallsPanel } from "@/components/paid-calls";
 import { RawLog } from "@/components/raw-log";
 import { Scorecard } from "@/components/scorecard";
@@ -45,6 +46,8 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
           </div>
         </section>
       ) : null}
+
+      <DownloadParts jobId={job.id} />
 
       <ClipWorkbench job={job} onSend={onSend} />
 
@@ -114,6 +117,12 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
               {busy ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}{s.results.sendRevision}
             </Button>
           </div>
+        )}
+        {!sent && (
+          <Button variant="outline" size="sm" className="mt-3 rounded-full" disabled={busy}
+            onClick={async () => { setBusy(true); try { await onSend(`REVISION: ${s.results.removeTextMessage}`); setSent(true); } finally { setBusy(false); } }}>
+            {s.results.removeText}
+          </Button>
         )}
       </section>
 
