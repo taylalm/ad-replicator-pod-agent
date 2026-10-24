@@ -225,7 +225,7 @@ export const api = {
   validateSample: (url: string) => request<ValidateResult>("/api/validate-sample", { method: "POST", body: JSON.stringify({ url }) }),
   createJob: (body: {
     title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string } | null; product_url: string; requirements: string; budget: Budget;
-    options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none" }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
+    options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none"; video_model?: string; image_model?: string }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
   }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
   uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>

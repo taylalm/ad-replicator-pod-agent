@@ -5,7 +5,7 @@
   "source_video_url": "https://.../sample.mp4",
   "product": {"name": "Personalized Reading Socks", "names": ["LILY"], "personalization": "otter avatar + quote 'Do Not Disturb - I'm Reading' + name LILY on the soles"},
   "do_not_copy": ["..."],
-  "defaults": {"version": "2.5", "ratio": "9:16", "resolution": "480p", "download": "/mnt/session/outputs/07_clips"},
+  "defaults": {"version": "2.5", "model": "<endpoint from VIDEO_MODEL, optional>", "ratio": "9:16", "resolution": "480p", "download": "/mnt/session/outputs/07_clips"},
   "references": [
     {"id": "person_lily", "kind": "person", "path": "/mnt/session/outputs/04_people/person_lily.png", "describe": "woman about 30, wavy brown hair, cream knit sweater"},
     {"id": "product_lily", "kind": "product", "path": "/mnt/session/outputs/05_personalize/product_lily.png", "describe": "dark teal crew socks, otter artwork and LILY on the sole"},
@@ -35,3 +35,5 @@
 | `clips[].first_frame` | path of a still to animate (sets `--first-frame` and ratio adaptive); only for shots whose opening frame does not show the product; never a composited product still |
 
 `render` writes `commands.sh` next to the plan; each line is one `generate-with-seedance` call with `--download` set to `defaults.download` (clip files are saved as `<task_id>.mp4`; rename or map them in the edit plan by task id).
+
+`defaults.version` and `defaults.model` come from the brief's `VIDEO_MODEL` line (for example `--version 2.0-mini --model ep-...`); `craft.py template --version ... --model ...` sets them. Seedance 2.0, 2.0 fast and 2.0 mini allow 4-15 s per clip (2.5: 4-30 s); fast and mini go up to 720p.

@@ -51,6 +51,8 @@ class Options(BaseModel):
     length_s: int = Field(20, ge=5, le=60)
     resolution: str = "480p"
     captions: str = Field("full", pattern="^(full|cta_only|none)$")  # on-screen text: all captions, only the call to action, or none
+    video_model: str = Field("seedance-2.5", pattern="^seedance-(2\\.5|2\\.0|2\\.0-fast|2\\.0-mini)$")
+    image_model: str = Field("seedream-5.0-pro", pattern="^seedream-5\\.0-(pro|flash)$")
 
 
 class NewJob(BaseModel):

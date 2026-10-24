@@ -98,6 +98,8 @@ def main():
     ap.add_argument("--spec", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--size", default="2K")
+    ap.add_argument("--version", default="5.0-pro", help="Seedream version from the brief's IMAGE_MODEL line (5.0-pro or 5.0-flash)")
+    ap.add_argument("--model", help="inference endpoint from the brief's IMAGE_MODEL line (ep-...)")
     a = ap.parse_args()
     spec = json.load(open(a.spec))
     if not spec.get("products"):
@@ -107,6 +109,7 @@ def main():
     # every person's own photo always goes in, named, so a scene reference can never swap who is who (the cartoon on a
     # photo product is drawn from that photo: the person in the still must be the same child)
     people_imgs = [(p["name"], p["who"], p["image"]) for p in spec.get("people", []) if p.get("image")]
+    model_args = ["--version", a.version] + (["--model", a.model] if a.model else [])
     refs = ([spec["reference_image"]] if spec.get("reference_image") else []) + [img for _, _, img in people_imgs]
     plain = plain_prompt(spec)
     if people_imgs:
@@ -116,12 +119,12 @@ def main():
                   + "; ".join(f"image {first + k} is {who} ({name})" for k, (name, who, _) in enumerate(people_imgs)) + ".")
     plain_path = os.path.join(a.out, f"{shot}_plain.png")
     job1 = [{"name": f"{shot}_plain", "args": ["--prompt", plain] + sum((["--image", r] for r in refs), [])
-             + ["--size", a.size, "--output-format", "png", "--download", a.out, "--name", f"{shot}_plain"]}]
+             + ["--size", a.size, "--output-format", "png", "--download", a.out, "--name", f"{shot}_plain"] + model_args}]
     job2, merge_items = [], []
     for pr in spec["products"]:
         n = f"{shot}_print_{pr.get('owner', 'item').lower()}"
         job2.append({"name": n, "args": ["--prompt", print_prompt(spec, pr), "--image", plain_path, "--image", pr["preview"],
-                                         "--size", a.size, "--output-format", "png", "--download", a.out, "--name", n]})
+                                         "--size", a.size, "--output-format", "png", "--download", a.out, "--name", n] + model_args})
         who = next((p["who"] for p in spec.get("people", []) if p["name"] == pr.get("owner")), pr.get("owner"))
         merge_items.append(f"{pr.get('colour')} {pr.get('kind')} of {who}|{os.path.join(a.out, n + '.png')}|{pr['preview']}")
     for fname, data in (("jobs_plain.json", job1), ("jobs_print.json", job2)):

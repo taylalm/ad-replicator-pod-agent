@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+from models import DEFAULT_IMAGE, DEFAULT_VIDEO, IMAGE_MODELS, VIDEO_MODELS, flags
+
 
 def one_line(text: str) -> str:
     text = (text or "").strip()
@@ -27,6 +29,8 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
     captions = (options or {}).get("captions") or "full"
     if captions not in ("full", "cta_only", "none"):
         captions = "full"
+    video = VIDEO_MODELS.get((options or {}).get("video_model") or DEFAULT_VIDEO, VIDEO_MODELS[DEFAULT_VIDEO])
+    image = IMAGE_MODELS.get((options or {}).get("image_model") or DEFAULT_IMAGE, IMAGE_MODELS[DEFAULT_IMAGE])
     req = one_line(requirements)
     output_note = f"Output: about {length_s} s, {resolution}, 9:16 vertical."
     if "Output:" not in req:
@@ -40,6 +44,8 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
         f"AUTO_APPROVE: {'yes' if auto_approve else 'no'}",
         f"STEP_APPROVE: {'yes' if step_approve else 'no'}",
         f"CAPTIONS: {captions}",
+        f"VIDEO_MODEL: {video['label']} | {flags(video)}",
+        f"IMAGE_MODEL: {image['label']} | {flags(image)}",
     ]
     for r in references or []:
         name = (r.get("mount_name") or r.get("filename") or "").strip()

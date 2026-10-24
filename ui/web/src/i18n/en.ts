@@ -112,6 +112,10 @@ export const en = {
     resolution: { label: "Resolution" },
     captions: { label: "On-screen text", full: "Captions", cta_only: "Call to action only", none: "No text",
       help: "Every ad also comes with a version without any text, for re-editing with your own footage." },
+    models: { video: "Video model", image: "Image model",
+      help: "Seedance 2.5 and Seedream 5.0 pro give the best quality. The 2.0, fast, mini and flash models are cheaper and faster; compare them on a test ad first.",
+      names: { "seedance-2.5": "Seedance 2.5", "seedance-2.0": "Seedance 2.0", "seedance-2.0-fast": "2.0 fast", "seedance-2.0-mini": "2.0 mini",
+        "seedream-5.0-pro": "Seedream 5.0 pro", "seedream-5.0-flash": "Seedream 5.0 flash" } as Record<string, string> },
     budget: {
       seedream: "AI people images",
       seedance: "Video clips",

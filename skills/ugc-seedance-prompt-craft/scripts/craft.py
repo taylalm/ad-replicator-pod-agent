@@ -23,6 +23,11 @@ RESOLUTIONS = {"480p", "720p", "1080p"}
 MODES = {"reference", "edit", "extend"}
 MAX_IMAGES, MAX_VIDEOS = 30, 10          # Seedance 2.5 tutorial: 30 images + 10 videos + 10 audio
 DURATION_RANGE = (4, 30)                 # Seedance 2.5
+# per version, from generate-with-seedance (Seedance 2.5 tutorial capability table): durations and resolutions
+VERSION_RULES = {"2.5": {"duration": (4, 30), "resolutions": ("480p", "720p", "1080p")},
+                 "2.0": {"duration": (4, 15), "resolutions": ("480p", "720p", "1080p")},
+                 "2.0-fast": {"duration": (4, 15), "resolutions": ("480p", "720p")},
+                 "2.0-mini": {"duration": (4, 15), "resolutions": ("480p", "720p")}}
 EDIT_TRIGGERS = re.compile(r"\b(edit( the)? video|add|insert|remove|delete|modify|replace|change to)\b", re.I)
 EXTEND_TRIGGERS = re.compile(r"\b(extend (forward|backward)|extend|continue( from| the story)?)\b", re.I)
 NO_SUBTITLES = re.compile(r"no subtitles", re.I)
@@ -72,7 +77,8 @@ def template(args):
     clips = []
     for i, grp in enumerate(groups, 1):
         length = sum(s["end"] - s["start"] for s in grp)
-        duration = int(min(max(DURATION_RANGE[0], round(length + 1)), DURATION_RANGE[1]))
+        lo, hi = VERSION_RULES.get(args.version, VERSION_RULES["2.5"])["duration"]
+        duration = int(min(max(lo, round(length + 1)), hi))
         shots, t = [], 0
         for s in grp:
             seg = max(1, round(s["end"] - s["start"]))
@@ -96,7 +102,8 @@ def template(args):
                     "size_statement": "<chosen size with a scale cue, e.g. 50 x 60 inches (127 x 152 cm): held up by an 8-year-old it is taller than the child and wider than their arm span; leave empty for products without a size>"},
         "cast_count": "<number of people in the sample analysis; the replica uses the same number>",
         "do_not_copy": analysis.get("do_not_copy", []),
-        "defaults": {"version": "2.5", "ratio": "9:16", "resolution": "480p", "download": "/mnt/session/outputs/07_clips"},
+        "defaults": {"version": args.version, **({"model": args.model} if args.model else {}), "ratio": "9:16", "resolution": "480p",
+                     "download": "/mnt/session/outputs/07_clips"},
         "references": [
             {"id": "<person_ref_id>", "kind": "person", "path": "/mnt/session/outputs/04_people/person_<name>.png", "describe": "<age, look, outfit>"},
             {"id": "<product_ref_id>", "kind": "product", "path": "/mnt/session/outputs/05_personalize/product_<name>.png", "describe": "<the personalized preview: options, name>"},
@@ -169,10 +176,16 @@ def validate_plan(plan, analysis=None):
             errors.append(f"{cid}: mode must be one of {sorted(MODES)}")
         if ratio not in RATIOS:
             errors.append(f"{cid}: ratio {ratio!r} invalid")
-        if resolution not in RESOLUTIONS:
-            errors.append(f"{cid}: resolution {resolution!r} invalid for Seedance 2.5")
-        if not (duration == -1 or (isinstance(duration, int) and DURATION_RANGE[0] <= duration <= DURATION_RANGE[1])):
-            errors.append(f"{cid}: duration must be -1 or an integer {DURATION_RANGE[0]}-{DURATION_RANGE[1]} s")
+        version = str(c.get("version", defaults.get("version", "2.5")))
+        rules = VERSION_RULES.get(version)
+        if rules is None:
+            errors.append(f"{cid}: version {version!r} must be one of {sorted(VERSION_RULES)}")
+            rules = VERSION_RULES["2.5"]
+        lo, hi = rules["duration"]
+        if resolution not in RESOLUTIONS or resolution not in rules["resolutions"]:
+            errors.append(f"{cid}: resolution {resolution!r} invalid for Seedance {version}")
+        if not (duration == -1 or (isinstance(duration, int) and lo <= duration <= hi)):
+            errors.append(f"{cid}: duration must be -1 or an integer {lo}-{hi} s for Seedance {version}")
         if "REPLACE ME" in prompt or len(prompt.strip()) < 80:
             errors.append(f"{cid}: prompt is missing or too short")
             continue
@@ -289,6 +302,7 @@ def build_command(plan, clip):
     d = plan.get("defaults", {})
     parts = ["node", SEEDANCE_SCRIPT, "--confirmed",
              "--version", str(clip.get("version", d.get("version", "2.5"))),
+             *(["--model", str(clip.get("model", d.get("model")))] if clip.get("model", d.get("model")) else []),
              "--ratio", str(clip.get("ratio", d.get("ratio", "9:16"))),
              "--duration", str(clip.get("duration", -1)),
              "--resolution", str(clip.get("resolution", d.get("resolution", "480p"))),
@@ -373,6 +387,8 @@ def main():
     t = sub.add_parser("template")
     t.add_argument("--analysis", required=True)
     t.add_argument("--out", required=True)
+    t.add_argument("--version", default="2.5", help="Seedance version from the brief's VIDEO_MODEL line (2.5, 2.0, 2.0-fast, 2.0-mini)")
+    t.add_argument("--model", help="inference endpoint from the brief's VIDEO_MODEL line (ep-...)")
     v = sub.add_parser("validate")
     v.add_argument("--plan", required=True)
     v.add_argument("--analysis")

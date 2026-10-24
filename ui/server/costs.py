@@ -32,10 +32,32 @@ def _load_prices() -> dict:
             "seedance_with_video_per_m": {"480p": 0, "720p": 0, "1080p": 0}, "seedream_image_small": 0, "seedream_image_large": 0,
             "seedream_tier_pixels": 2_610_000, "agent_input_per_m": 0, "agent_cached_per_m": 0, "agent_output_per_m": 0,
             "evaluator_input_per_m": 0, "evaluator_output_per_m": 0, "evaluator_call_estimate": 0}
+    zero.update({"seedance_per_m_by_model": {}, "seedream_flash_image": 0})
     return zero
 
 
 PRICES = _load_prices()
+# model IDs behind the versions and the account's endpoints (ui/server/models.py), for pricing each task by its model
+SEEDANCE_ID = {"2.5": "dreamina-seedance-2-5-260628", "2.0": "dreamina-seedance-2-0-260128",
+               "2.0-fast": "dreamina-seedance-2-0-fast-260128", "2.0-mini": "dreamina-seedance-2-0-mini-260615"}
+
+
+def _seedance_model(rec_model: str, logged: str) -> str:
+    """Base model ID of a Seedance task from its record (model ID or endpoint) or the logged version."""
+    try:
+        from models import VIDEO_MODELS
+        by_ep = {m["endpoint"]: SEEDANCE_ID[m["version"]] for m in VIDEO_MODELS.values() if m.get("endpoint")}
+    except Exception:
+        by_ep = {}
+    for cand in (rec_model, logged):
+        cand = str(cand or "")
+        if cand in SEEDANCE_ID.values():
+            return cand
+        if cand in by_ep:
+            return by_ep[cand]
+        if cand in SEEDANCE_ID:
+            return SEEDANCE_ID[cand]
+    return SEEDANCE_ID["2.5"]
 SEEDANCE_DIMS = {"480p": (480, 864), "720p": (720, 1280), "1080p": (1080, 1920)}
 STEP_RE = re.compile(r"STEP\s+(\d+)\s*/\s*(\d+)\s*:\s*([^\n]+?)\s+-\s+(started|done|failed|skipped)\b", re.I)
 
@@ -183,6 +205,27 @@ def delivered_clips(files_dir: Path) -> List[str]:
     return out
 
 
+def _step_starts(events: List[dict]) -> List[Tuple[float, int]]:
+    """(time, step) of each 'STEP n/11: ... - started' line, in time order, for assigning costs to steps."""
+    out = []
+    for e in events:
+        if e.get("type") != "agent.message":
+            continue
+        t = _ts(e.get("processed_at"))
+        for mm in STEP_RE.finditer(_text(e)):
+            if mm.group(4).lower() == "started" and t is not None:
+                out.append((t, int(mm.group(1))))
+    return sorted(out)
+
+
+def _step_at(starts: List[Tuple[float, int]], t: Optional[float]) -> int:
+    n = 0
+    for st, k in starts:
+        if t is not None and st <= t:
+            n = k
+    return n
+
+
 def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any]:
     prod = production_time(events)
     windows = prod.pop("windows")
@@ -197,6 +240,13 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
          "seedance": {"tasks": 0, "tokens": 0, "usd": 0.0},
          "seedream": {"images_small": 0, "images_large": 0, "usd": 0.0},
          "evaluator_gate": {"calls": 0, "usd": 0.0}, "evaluator_clip_checks": {"calls": 0, "usd": 0.0}}
+    starts = _step_starts(events)
+    by_step: Dict[int, Dict[str, float]] = {}
+
+    def add_step(n, key, usd):
+        row = by_step.setdefault(int(n or 0), {})
+        row[key] = row.get(key, 0.0) + usd
+
     for c in calls:
         status = str(c.get("status", "")).lower()
         rec_status = str((cache.get(str(c.get("id", ""))) or {}).get("status") or "").lower()
@@ -216,15 +266,25 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
                 dur = rec.get("duration") or (int(m.group(1)) if (m := re.search(r"(\d+)\s*s\b", note)) else 5)
                 w, h = SEEDANCE_DIMS.get(res, (480, 864))
                 tokens = dur * w * h * (rec.get("framespersecond") or 24) / 1024
-            price = PRICES["seedance_per_m"].get(res, PRICES["seedance_per_m"]["480p"]) * tokens / 1e6
+            model_id = _seedance_model(rec.get("model"), c.get("model"))
+            table = (PRICES.get("seedance_per_m_by_model") or {}).get(model_id) or PRICES["seedance_per_m"]
+            price = table.get(res, table.get("480p", 0)) * tokens / 1e6
+            per = mu["seedance"].setdefault("by_model", {}).setdefault(model_id, {"tasks": 0, "tokens": 0, "usd": 0.0})
+            per["tasks"] += 1
+            per["tokens"] += int(tokens)
+            per["usd"] += price
             seedance_tokens += int(tokens)
             mu["seedance"]["tasks"] += 1
             mu["seedance"]["tokens"] += int(tokens)
             mu["seedance"]["usd"] += price
             t = rec.get("created_at") or _first_mention(events, cid)
         elif kind == "seedream":
-            price = _seedream_price(note)
-            mu["seedream"]["images_large" if price == PRICES["seedream_image_large"] else "images_small"] += 1
+            flash = "flash" in (str(c.get("model") or "") + note).lower()
+            price = PRICES.get("seedream_flash_image", 0) if flash else _seedream_price(note)
+            if flash:
+                mu["seedream"]["images_flash"] = mu["seedream"].get("images_flash", 0) + 1
+            if not flash:
+                mu["seedream"]["images_large" if price == PRICES["seedream_image_large"] else "images_small"] += 1
             mu["seedream"]["usd"] += price
             t = _first_mention(events, cid) if not cid.startswith("unrecorded") else None
         elif kind in ("evaluator", "clip_check"):
@@ -238,6 +298,11 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
             continue
         b[kind]["total"] += price
         b[kind]["count_total"] += 1
+        try:
+            n_step = int(c.get("step") or 0)
+        except (TypeError, ValueError):
+            n_step = 0
+        add_step(n_step or _step_at(starts, t if isinstance(t, (int, float)) else None), kind, price)
         if _in_windows(t, windows):
             b[kind]["first_pass"] += price
             b[kind]["count_first"] += 1
@@ -250,6 +315,7 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         usd = (uncached * PRICES["agent_input_per_m"] + cached * PRICES["agent_cached_per_m"] + (u.get("output_tokens") or 0) * PRICES["agent_output_per_m"]) / 1e6
         b["agent"]["total"] += usd
         b["agent"]["count_total"] += 1
+        add_step(_step_at(starts, _ts(e.get("processed_at"))), "agent", usd)
         mu["agent"]["input_tokens"] += uncached
         mu["agent"]["cached_tokens"] += cached
         mu["agent"]["output_tokens"] += (u.get("output_tokens") or 0)
@@ -293,6 +359,7 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         "cost_total_usd": round(sum(v["total"] for v in b.values()), 2),
         "breakdown": b, "seedance_tokens": seedance_tokens, "prices": PRICES,
         "models": _model_rows(mu), "waiting_s": waiting_time(events),
+        "by_step": [{"step": n, **{k: round(v, 3) for k, v in row.items()}, "usd": round(sum(row.values()), 3)} for n, row in sorted(by_step.items())],
         "notes": ["Evaluator calls are an estimate per call (about 15K input and 1.5K output tokens).",
                   "Seedream input images beyond the first ($0.003 each) are not in the log and are left out.",
                   "List prices; a negotiated contract price list would replace PRICES."],
@@ -306,10 +373,14 @@ def _model_rows(m: Dict[str, Any]) -> List[Dict[str, Any]]:
         {"model": "GLM-5.3 Flash (agent)", "id": "glm-5-3-flash-260828",
          "usage": f"{a['input_tokens']:,} input + {a['cached_tokens']:,} cached input + {a['output_tokens']:,} output tokens ({a['requests']} requests)",
          "unit_price": f"${PRICES['agent_input_per_m']} / ${PRICES['agent_cached_per_m']} / ${PRICES['agent_output_per_m']} per 1M tokens", "usd": round(a["usd"], 3)},
-        {"model": "Seedance 2.5 (video)", "id": "dreamina-seedance-2-5-260628",
-         "usage": f"{sd['tasks']} tasks, {sd['tokens']:,} tokens", "unit_price": f"${PRICES['seedance_per_m']['480p']} per 1M tokens (480p/720p)", "usd": round(sd["usd"], 3)},
-        {"model": "Seedream 5.0 pro (images)", "id": "dola-seedream-5-0-pro-260628",
-         "usage": f"{sr['images_small']} images up to 2.6 MP + {sr['images_large']} larger", "unit_price": f"${PRICES['seedream_image_small']} / ${PRICES['seedream_image_large']} per image", "usd": round(sr["usd"], 3)},
+        *[{"model": f"Seedance {ver} (video)", "id": mid,
+           "usage": f"{row['tasks']} tasks, {row['tokens']:,} tokens",
+           "unit_price": f"${((PRICES.get('seedance_per_m_by_model') or {}).get(mid) or PRICES['seedance_per_m']).get('480p')} per 1M tokens (480p/720p)",
+           "usd": round(row["usd"], 3)}
+          for mid, row in (sd.get("by_model") or {}).items() for ver in [next((v for v, i in SEEDANCE_ID.items() if i == mid), mid)]],
+        {"model": "Seedream 5.0 (images)", "id": "dola-seedream-5-0-pro-260628 / dola-seedream-5-0-flash-260915",
+         "usage": f"pro: {sr['images_small']} images up to 2.6 MP + {sr['images_large']} larger; flash: {sr.get('images_flash', 0)} images",
+         "unit_price": f"pro ${PRICES['seedream_image_small']} / ${PRICES['seedream_image_large']}, flash ${PRICES.get('seedream_flash_image', 0)} per image", "usd": round(sr["usd"], 3)},
         {"model": "Seed 2.0 lite (quality gate)", "id": "seed-2-0-lite-260428",
          "usage": f"{eg['calls']} calls (estimate per call)", "unit_price": f"${PRICES['evaluator_input_per_m']} in / ${PRICES['evaluator_output_per_m']} out per 1M tokens", "usd": round(eg["usd"], 3)},
         {"model": "Seed 2.0 lite (clip checks)", "id": "seed-2-0-lite-260428",
