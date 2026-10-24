@@ -179,6 +179,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+// Gateways cap request bodies (API Gateway: 16 MB), so larger files go up in pieces the server joins again.
+const CHUNK_OVER = 12 * 1024 * 1024;
+const CHUNK_SIZE = 8 * 1024 * 1024;
+
+async function postForm<T>(path: string, fd: FormData): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: fd });
+  if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || `Upload failed (${res.status})`);
+  return (await res.json()) as T;
+}
+
+async function sendFile<T>(path: string, file: File, note: string, jobId?: string): Promise<T> {
+  if (file.size <= CHUNK_OVER) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("note", note);
+    return postForm<T>(path, fd);
+  }
+  const total = Math.ceil(file.size / CHUNK_SIZE);
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let last: unknown = null;
+  for (let i = 0; i < total; i++) {
+    const fd = new FormData();
+    fd.append("chunk", file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE), file.name);
+    fd.append("upload_id", uploadId);
+    fd.append("index", String(i));
+    fd.append("total", String(total));
+    fd.append("filename", file.name);
+    fd.append("note", note);
+    if (jobId) fd.append("job_id", jobId);
+    last = await postForm<unknown>("/api/uploads/chunk", fd);
+  }
+  return last as T;
+}
+
 export const api = {
   health: () => request<{ ok: boolean; api_key_present: boolean; demo_jobs: string[] }>("/api/health"),
   jobs: () => request<{ jobs: JobRow[]; live_running: boolean }>("/api/jobs"),
@@ -192,22 +226,9 @@ export const api = {
     title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string } | null; product_url: string; requirements: string; budget: Budget;
     options: { length_s: number; resolution: string }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
   }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
-  uploadReference: async (file: File, note: string): Promise<Reference> => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("note", note);
-    const res = await fetch(`${API_BASE}/api/uploads`, { method: "POST", body: fd });
-    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || `Upload failed (${res.status})`);
-    return (await res.json()) as Reference;
-  },
-  uploadToJob: async (id: string, file: File, note: string): Promise<SessionUpload> => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("note", note);
-    const res = await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}/references`, { method: "POST", body: fd });
-    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || `Upload failed (${res.status})`);
-    return (await res.json()) as SessionUpload;
-  },
+  uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
+  uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>
+    sendFile(`/api/jobs/${encodeURIComponent(id)}/references`, file, note, id),
   message: (id: string, text: string) =>
     request<{ ok: boolean; demo?: boolean }>(`/api/jobs/${encodeURIComponent(id)}/message`, { method: "POST", body: JSON.stringify({ text }) }),
 };

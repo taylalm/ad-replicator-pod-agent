@@ -51,7 +51,7 @@ def launch():
     context = browser.new_context(viewport={"width": 1280, "height": 1600}, user_agent=UA,
                                   locale="en-US", device_scale_factor=1)
     page = context.new_page()
-    page.set_default_timeout(30000)
+    page.set_default_timeout(15000)
     return pw, browser, page
 
 
@@ -257,23 +257,199 @@ def guard_click(page, selector):
     return el
 
 
+CLICK_CAP_MS = 20000   # an element that is there is clickable within seconds; long timeouts only waste minutes
+CONFIRM_TEXT = re.compile(r"^\s*(apply|done|save|confirm|ok|crop|use (this )?photo|continue)\s*$", re.I)
+SELECTED_JS = r"""
+(el) => {
+  const hit = (e) => {
+    const c = (typeof e.className === 'string' ? e.className : '') || '';
+    return /(^|[\s_-])(active|selected|checked)($|[\s_-])/i.test(c) || ['aria-checked', 'aria-selected', 'aria-pressed'].some(a => e.getAttribute && e.getAttribute(a) === 'true')
+      || (e.matches && e.matches('input:checked'));
+  };
+  if (hit(el) || [...el.querySelectorAll('*')].slice(0, 40).some(hit)) return true;
+  // a small inner element (text span) whose tile/pill carries the state: up to 2 ancestors of similar size
+  const r = el.getBoundingClientRect(); let p = el.parentElement;
+  for (let i = 0; i < 2 && p; i++, p = p.parentElement) {
+    const q = p.getBoundingClientRect();
+    if (q.width * q.height > 4 * Math.max(1, r.width * r.height)) break;
+    if (hit(p)) return true;
+  }
+  return false;
+}
+"""
+# A photo editor/crop dialog opened by an upload: a confirm button (Apply, Done, ...) on top of the page, inside a box
+# about the photo, never inside anything that offers Add to cart. The button is marked so Python can click it.
+EDITOR_JS = r"""
+(pattern) => {
+  const re = new RegExp(pattern, 'i');
+  document.querySelectorAll('[data-pz-confirm]').forEach(e => e.removeAttribute('data-pz-confirm'));
+  for (const b of document.querySelectorAll('button, [role="button"], a, div, span')) {
+    const t = (b.innerText || '').trim();
+    if (!t || t.length > 20 || !re.test(t) || b.querySelector('button')) continue;
+    const r = b.getBoundingClientRect();
+    if (r.width < 20 || r.height < 14) continue;
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!top || !(top === b || b.contains(top) || top.contains(b))) continue;
+    let p = b.parentElement, about = false;
+    for (let i = 0; i < 7 && p; i++, p = p.parentElement) {
+      const pt = p.innerText || '';
+      if (/add to cart|checkout|buy now/i.test(pt)) break;  // reached the page (or a purchase dialog) first: not an editor
+      if (/edit photo|crop|adjust|edit image|replace photo/i.test(pt)) { about = true; break; }
+    }
+    if (about) { b.setAttribute('data-pz-confirm', '1'); return t; }
+  }
+  return null;
+}
+"""
+
+
+def norm_selector(sel):
+    """Fix common slips in hand-written selectors (Python-style booleans in Playwright pseudo-selectors)."""
+    if not sel:
+        return sel
+    return re.sub(r"(visible\s*=\s*)(True|TRUE|False|FALSE)\b", lambda m: m.group(1) + m.group(2).lower(), sel)
+
+
+def confirm_photo_editor(page, wait_ms=0):
+    """Confirm a photo-editor dialog (Apply/Done) if one is open. Returns the button text, or None if there is none."""
+    deadline = time.time() + wait_ms / 1000
+    while True:
+        try:
+            text = page.evaluate(EDITOR_JS, CONFIRM_TEXT.pattern)
+        except Exception:
+            text = None
+        if text and not FORBIDDEN.search(text):
+            try:
+                page.locator("[data-pz-confirm='1']").first.click(timeout=5000)
+                page.wait_for_timeout(1500)
+                return text
+            except Exception:
+                pass
+        if time.time() >= deadline:
+            return None
+        page.wait_for_timeout(500)
+
+
+def is_selected(loc):
+    try:
+        return bool(loc.evaluate(SELECTED_JS))
+    except Exception:
+        return None
+
+
+def text_of_selector(sel):
+    m = re.match(r"\s*text\s*=\s*[\"']?(.+?)[\"']?\s*(>>|$)", sel or "")
+    return m.group(1).strip() if m else None
+
+
+def click_target(page, step):
+    """The locator a click/click_text step points at."""
+    if step.get("action") == "click_text":
+        scope = page.locator(norm_selector(step["selector"])).first if step.get("selector") else page
+        return scope.get_by_text(step["text"], exact=step.get("exact", True)).first
+    return guard_click(page, norm_selector(step["selector"]))
+
+
+def alternatives(page, step):
+    """Other ways to find the same control when the first locator does not resolve (text controls only)."""
+    text = step.get("text") if step.get("action") == "click_text" else text_of_selector(step.get("selector"))
+    if not text:
+        return []
+    return [page.get_by_role("button", name=text, exact=True).first, page.get_by_role("link", name=text, exact=True).first,
+            page.get_by_text(text, exact=True).locator("visible=true").first,
+            page.get_by_text(text, exact=False).locator("visible=true").first]
+
+
+def do_click(page, step, timeout_ms):
+    el = click_target(page, step)
+    el.wait_for(state="attached", timeout=min(timeout_ms, 8000))  # a selector that matches nothing fails in seconds
+    el.scroll_into_view_if_needed(timeout=timeout_ms)
+    el.click(timeout=timeout_ms)
+    return el
+
+
+def close_preview_dialog(page):
+    """Close the site's preview dialog via its Close control or Escape, never its Add to cart button."""
+    for cand in ["[role='dialog']:visible button:has-text('Close')", "[class*='modal' i]:visible button:has-text('Close')",
+                 ".ant-modal-close:visible", "[aria-label='Close']:visible", "text=Close >> visible=true"]:
+        try:
+            el = page.locator(cand).first
+            if el.is_visible(timeout=800):
+                guard_click(page, cand)
+                el.click(timeout=3000)
+                page.wait_for_timeout(500)
+                return True
+        except Exception:
+            continue
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+    return False
+
+
 def capture(page, step, out_dir):
-    target = step.get("selector")
+    """Save the preview. Order: canvas export (works even when a dialog covers the canvas), element screenshot,
+    element screenshot after closing a covering dialog, then a viewport screenshot (flagged so the agent checks it)."""
+    target = norm_selector(step.get("selector"))
     path = os.path.join(out_dir, step.get("file", "preview.png"))
     loc = page.locator(target).first
-    loc.wait_for(state="visible", timeout=step.get("timeout_ms", 30000))
-    method = "element_screenshot"
-    if step.get("method", "auto") in ("auto", "canvas") and loc.evaluate("e => e.tagName") == "CANVAS":
+    notes = []
+    try:
+        loc.wait_for(state="attached", timeout=min(int(step.get("timeout_ms", 15000)), CLICK_CAP_MS))
+    except Exception as error:
+        notes.append(f"not found: {str(error)[:120]}")
+    if not notes and step.get("method", "auto") in ("auto", "canvas"):
         try:
-            data = loc.evaluate("c => c.toDataURL('image/png')")
-            with open(path, "wb") as fh:
-                fh.write(base64.b64decode(data.split(",", 1)[1]))
-            method = "canvas_export"
-        except Exception:
-            loc.screenshot(path=path)  # tainted canvas (cross-origin images): fall back to a screenshot
-    else:
-        loc.screenshot(path=path)
-    return {"file": path, "method": method}
+            if loc.evaluate("e => e.tagName") == "CANVAS":
+                data = base64.b64decode(loc.evaluate("c => c.toDataURL('image/png')").split(",", 1)[1])
+                if len(data) > 3000:  # an empty canvas encodes to a few hundred bytes
+                    with open(path, "wb") as fh:
+                        fh.write(data)
+                    return {"file": path, "method": "canvas_export"}
+                notes.append("canvas is empty")
+        except Exception as error:
+            notes.append(f"canvas export: {str(error)[:120]}")  # tainted canvas (cross-origin images)
+    for attempt in range(2):
+        try:
+            loc.screenshot(path=path, timeout=8000)
+            return {"file": path, "method": "element_screenshot", **({"notes": notes} if notes else {})}
+        except Exception as error:
+            notes.append(f"element screenshot: {str(error)[:120]}")
+            if attempt == 0:
+                close_preview_dialog(page)
+    page.screenshot(path=path)
+    return {"file": path, "method": "viewport_fallback", "notes": notes,
+            "warning": "The preview element could not be captured; this is a viewport screenshot. Open it and crop if usable."}
+
+
+def is_option_step(step):
+    """Clicks that choose a product option (tile, pill, swatch): verified after the click and re-checked later."""
+    if "option" in step:
+        return bool(step["option"])
+    if step.get("action") not in ("click", "click_text"):
+        return False
+    label = (step.get("text") or text_of_selector(step.get("selector")) or step.get("selector") or "")
+    return not re.search(r"preview|close|apply|done|save|confirm|cancel|edit|ok\b|continue|crop", label, re.I)
+
+
+def reassert_options(page, options, log_entry):
+    """Re-click any chosen option the page has since reset (an upload can reset the background, for example)."""
+    for opt in options:
+        if opt["selected"] is not True:
+            continue  # state not readable on this site: nothing to compare
+        try:
+            loc = click_target(page, opt["step"])
+            if is_selected(loc) is False:
+                loc.scroll_into_view_if_needed(timeout=8000)
+                loc.click(timeout=8000)
+                page.wait_for_timeout(1500)
+                opt["reapplied"] = opt.get("reapplied", 0) + 1
+                log_entry.setdefault("reapplied_options", []).append(opt["label"])
+                if is_selected(loc) is False:
+                    opt["selected"] = False
+        except SystemExit:
+            raise
+        except Exception as error:
+            log_entry.setdefault("notes", []).append(f"recheck {opt['label']}: {str(error)[:100]}")
 
 
 def run(args):
@@ -291,32 +467,88 @@ def run(args):
             fail(f"steps[{i}]: upload file not found: {step.get('file')}")
     os.makedirs(out_dir, exist_ok=True)
     pw, browser, page = launch()
-    log, captures = [], []
+    log, captures, options = [], [], []
+    editor_pending = False  # an upload happened and its photo editor (if the site has one) is not confirmed yet
+    run_started = time.time()
     try:
         status = open_page(page, url)
         for i, step in enumerate(steps):
-            action, sel = step.get("action"), step.get("selector")
-            page.set_default_timeout(int(step.get("timeout_ms", 30000)))
+            action, sel = step.get("action"), norm_selector(step.get("selector"))
+            interactive = action in ("fill", "click", "click_text", "select", "capture", "capture_dialog", "screenshot")
+            limit = min(int(step.get("timeout_ms", 15000)), CLICK_CAP_MS) if interactive else int(step.get("timeout_ms", 30000))
+            page.set_default_timeout(limit)
             started = time.time()
+            entry = {"step": i + 1, "action": action, "ok": True}
+            label = step.get("text") or text_of_selector(sel) or sel or ""
             try:
-                if action == "fill":
+                if interactive:
+                    confirmed = confirm_photo_editor(page)  # a photo editor left open blocks every other control
+                    if confirmed:
+                        entry["auto_confirmed_editor"] = confirmed
+                        editor_pending = False
+                if action in ("click", "click_text") and CONFIRM_TEXT.match(label):
+                    # the plan's own "Apply"/"Done" for a photo editor: wait for it; fine if it was already confirmed
+                    text = entry.get("auto_confirmed_editor") or (
+                        confirm_photo_editor(page, wait_ms=min(int(step.get("timeout_ms", 15000)), CLICK_CAP_MS)) if editor_pending else None)
+                    entry["confirmed_editor"] = text or "no editor dialog open (already confirmed)"
+                    editor_pending = False
+                elif action == "confirm_editor":
+                    entry["confirmed_editor"] = confirm_photo_editor(page, wait_ms=int(step.get("timeout_ms", 15000)) if editor_pending else 0) or "no editor dialog open"
+                    editor_pending = False
+                elif action == "fill":
                     loc = page.locator(sel).first
                     loc.scroll_into_view_if_needed()
                     loc.fill(str(step["value"]))
                     loc.press("Tab")
                 elif action == "upload":
                     page.locator(sel).first.set_input_files(step["file"])
-                elif action == "click":
-                    el = guard_click(page, sel)
-                    el.scroll_into_view_if_needed()
-                    el.click(timeout=step.get("timeout_ms", 10000))
-                elif action == "click_text":
-                    if FORBIDDEN.search(step["text"]):
+                    editor_pending = True
+                elif action in ("click", "click_text"):
+                    if action == "click_text" and FORBIDDEN.search(step["text"]):
                         fail(f"Refused to click purchase/account text {step['text']!r}")
-                    scope = page.locator(sel).first if sel else page
-                    el = scope.get_by_text(step["text"], exact=step.get("exact", True)).first
-                    el.scroll_into_view_if_needed()
-                    el.click(timeout=step.get("timeout_ms", 10000))
+                    if re.search(r"preview", label, re.I):
+                        reassert_options(page, options, entry)  # the preview must show every chosen option
+                    before = [(o, is_selected(click_target(page, o["step"]))) for o in options] if is_option_step(step) else []
+                    try:
+                        el = do_click(page, {**step, "selector": sel}, limit)
+                    except SystemExit:
+                        raise
+                    except Exception as first_error:
+                        # one recovery: confirm a photo editor, close overlays, then try the same control another way
+                        entry["recovered_from"] = str(first_error).split("\n")[0][:160]
+                        confirm_photo_editor(page)
+                        dismiss_popups(page)
+                        el = None
+                        for alt in [click_target(page, {**step, "selector": sel})] + alternatives(page, step):
+                            try:
+                                if alt.is_visible(timeout=2000):
+                                    txt = (alt.inner_text(timeout=1000) or "")
+                                    if FORBIDDEN.search(txt):
+                                        continue
+                                    alt.scroll_into_view_if_needed(timeout=5000)
+                                    alt.click(timeout=5000)
+                                    el = alt
+                                    break
+                            except Exception:
+                                continue
+                        if el is None:
+                            raise first_error
+                    if is_option_step(step):
+                        state = None
+                        for _ in range(4):  # the selected mark can take a moment to appear
+                            page.wait_for_timeout(400)
+                            state = is_selected(el)
+                            if state:
+                                break
+                        if state is False and not any(o["selected"] is True for o in options):
+                            state = None  # no option on this page has shown a readable selected state yet: unknown
+                        # an earlier choice this click deselected (another tile of the same group) is replaced, not lost
+                        replaced = [o for o, was in before if was is True and is_selected(click_target(page, o["step"])) is False]
+                        if replaced:
+                            options[:] = [o for o in options if o not in replaced]
+                            entry["replaces"] = [o["label"] for o in replaced]
+                        options.append({"label": label[:60], "step": {**step, "selector": sel}, "selected": state})
+                        entry["selected"] = state
                 elif action == "select":
                     page.locator(sel).first.select_option(label=step["label"])
                 elif action == "wait":
@@ -324,77 +556,27 @@ def run(args):
                 elif action == "wait_for":
                     page.locator(sel).first.wait_for(state=step.get("state", "visible"), timeout=step.get("timeout_ms", 60000))
                 elif action == "wait_text_gone":
-                    page.get_by_text(step["text"]).first.wait_for(state="hidden", timeout=step.get("timeout_ms", 90000))
+                    notice = page.get_by_text(step["text"]).first
+                    try:  # the notice can appear a moment after the upload: wait for it first, briefly
+                        notice.wait_for(state="visible", timeout=int(step.get("appear_ms", 4000)))
+                    except Exception:
+                        entry["note"] = "text never appeared"
+                    notice.wait_for(state="hidden", timeout=step.get("timeout_ms", 90000))
                 elif action == "dismiss_popups":
                     dismiss_popups(page)
                 elif action == "capture_dialog":
-                    # Screenshot of the site's preview dialog ("Looks Good to Go?"), used for the options montage.
-                    # Visible dialogs only: the page keeps hidden modal containers (div.content-modal) that match first otherwise.
-                    default_sel = "[role='dialog']:visible, .ant-modal-content:visible, [class*='modal' i][class*='content' i]:visible, [class*='modal' i]:visible"
-                    dialog = page.locator(sel or default_sel)
-                    if step.get("text"):
-                        dialog = dialog.filter(has_text=step["text"])
-                    dialog = dialog.first
-                    dialog.wait_for(state="visible", timeout=step.get("timeout_ms", 15000))
-                    page.wait_for_timeout(int(step.get("settle_ms", 800)))
-                    # The matched element is often the full-screen overlay: descend to the dialog box itself.
-                    vw = page.viewport_size["width"] if page.viewport_size else 1280
-                    box = dialog.bounding_box() or {"width": vw}
-                    target = dialog
-                    if box["width"] > 0.9 * vw:
-                        kids = dialog.locator(":scope > *")
-                        for k in range(min(kids.count(), 8)):
-                            kb = kids.nth(k).bounding_box()
-                            if kb and 0.2 * vw < kb["width"] < 0.9 * vw and kb["height"] > 100:
-                                target = kids.nth(k)
-                                break
-                    path = os.path.join(out_dir, step.get("file", f"dialog_{i + 1:02d}.png"))
-                    # Most robust: the smallest visible box that holds the dialog heading AND its Close/Add to cart controls
-                    # (the whole card, not the canvas behind it nor the full-screen overlay).
-                    heading = step.get("text") or "Looks Good"
-                    rect = page.evaluate("""(h) => {
-                        const vis = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
-                            return r.width > 200 && r.height > 250 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0'; };
-                        let best = null;
-                        for (const el of document.querySelectorAll('div, section, aside, dialog')) {
-                            const t = el.innerText || '';
-                            if (!t.includes(h) || !(/Close/i.test(t) || /Add to cart/i.test(t)) || !vis(el)) continue;
-                            const r = el.getBoundingClientRect();
-                            if (r.width >= window.innerWidth * 0.98 && r.height >= window.innerHeight * 0.98) continue;  // overlay
-                            if (!best || r.width * r.height < best.w * best.h) best = {x: r.left, y: r.top, w: r.width, h: r.height};
-                        }
-                        return best; }""", heading)
-                    if rect:
-                        page.screenshot(path=path, clip={"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["w"], "height": rect["h"]})
-                        captures.append({"file": path, "method": "dialog_card", "box": rect})
-                    else:
-                        target.screenshot(path=path)
-                        captures.append({"file": path, "method": "dialog_screenshot"})
+                    captures.append(capture_dialog(page, step, sel, out_dir, i))
                 elif action == "close_dialog":
-                    # Close the preview dialog without touching its Add to cart button.
-                    closed = False
-                    for cand in ["[role='dialog']:visible button:has-text('Close')", "[class*='modal' i]:visible button:has-text('Close')", ".ant-modal-close:visible", "[aria-label='Close']:visible", "text=Close >> visible=true"]:
-                        try:
-                            el = page.locator(cand).first
-                            if el.is_visible(timeout=800):
-                                guard_click(page, cand)
-                                el.click(timeout=3000)
-                                closed = True
-                                break
-                        except Exception:
-                            continue
-                    if not closed:
-                        page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
+                    close_preview_dialog(page)
                 elif action == "capture":
-                    captures.append(capture(page, step, out_dir))
+                    reassert_options(page, options, entry)
+                    captures.append(capture(page, {**step, "selector": sel}, out_dir))
                 elif action == "screenshot":
                     path = os.path.join(out_dir, step.get("file", f"step_{i + 1:02d}.png"))
                     (page.locator(sel).first.screenshot(path=path) if sel else page.screenshot(path=path, full_page=step.get("full_page", False)))
                     captures.append({"file": path, "method": "screenshot"})
                 else:
                     fail(f"steps[{i}]: unknown action {action!r}")
-                entry = {"step": i + 1, "action": action, "ok": True, "seconds": round(time.time() - started, 1)}
             except SystemExit:
                 raise
             except Exception as error:
@@ -403,19 +585,84 @@ def run(args):
                     page.screenshot(path=shot)
                 except Exception:
                     shot = None
-                log.append({"step": i + 1, "action": action, "ok": False, "error": str(error)[:400], "screenshot": shot})
-                out({"ok": False, "url": url, "http_status": status, "failed_step": i + 1, "log": log, "captures": captures,
-                     "hint": "Look at the error screenshot, fix the selector or add a wait, and rerun the whole plan."}, 1)
+                if step.get("optional"):
+                    entry.update({"ok": False, "skipped": True, "error": str(error).split("\n")[0][:200], "screenshot": shot})
+                else:
+                    log.append({**entry, "ok": False, "error": str(error)[:400], "screenshot": shot,
+                                "seconds": round(time.time() - started, 1)})
+                    out({"ok": False, "url": url, "http_status": status, "failed_step": i + 1, "log": log, "captures": captures,
+                         "options": option_report(options), "seconds": round(time.time() - run_started, 1),
+                         "hint": "Look at the error screenshot, fix that step (or mark it \"optional\": true) and rerun the whole plan."}, 1)
+            entry["seconds"] = round(time.time() - started, 1)
             if step.get("snapshot"):
                 snap = os.path.join(out_dir, f"after_step_{i + 1:02d}.png")
                 page.screenshot(path=snap)
                 entry["screenshot"] = snap
             log.append(entry)
-        out({"ok": True, "url": url, "http_status": status, "log": log, "captures": captures,
+        report = option_report(options)
+        lost = [o["label"] for o in report if o["selected"] is False]
+        out({"ok": True, "url": url, "http_status": status, "seconds": round(time.time() - run_started, 1),
+             "log": log, "captures": captures, "options": report,
+             **({"warning": f"These options did not stay selected: {lost}. Check the captures before using them."} if lost else {}),
              "next": "Open every captured image and confirm the personalization (name, photo, options) is visible and correct."})
     finally:
         browser.close()
         pw.stop()
+
+
+def option_report(options):
+    return [{"label": o["label"], "selected": o["selected"], **({"reapplied": o["reapplied"]} if o.get("reapplied") else {})}
+            for o in options]
+
+
+def capture_dialog(page, step, sel, out_dir, i):
+    """Screenshot of the site's preview dialog ("Looks Good to Go?"), used for the options montage.
+    First choice: the smallest visible box that holds the dialog heading AND its Close/Add to cart controls (the card,
+    not the canvas behind it nor the full-screen overlay). Fallback: the visible dialog element."""
+    path = os.path.join(out_dir, step.get("file", f"dialog_{i + 1:02d}.png"))
+    heading = step.get("text") or "Looks Good"
+    deadline = time.time() + min(int(step.get("timeout_ms", 15000)), CLICK_CAP_MS) / 1000
+    rect = None
+    while True:
+        rect = page.evaluate("""(h) => {
+            const vis = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el);
+                return r.width > 200 && r.height > 250 && cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0'; };
+            let best = null;
+            for (const el of document.querySelectorAll('div, section, aside, dialog')) {
+                const t = el.innerText || '';
+                if (!t.includes(h) || !(/Close/i.test(t) || /Add to cart/i.test(t)) || !vis(el)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width >= window.innerWidth * 0.98 && r.height >= window.innerHeight * 0.98) continue;  // overlay
+                if (!best || r.width * r.height < best.w * best.h) best = {x: r.left, y: r.top, w: r.width, h: r.height};
+            }
+            return best; }""", heading)
+        if rect or time.time() >= deadline:
+            break
+        page.wait_for_timeout(500)
+    if rect:
+        page.wait_for_timeout(int(step.get("settle_ms", 800)))  # let the dialog's image finish drawing
+        page.screenshot(path=path, clip={"x": max(0, rect["x"]), "y": max(0, rect["y"]), "width": rect["w"], "height": rect["h"]})
+        return {"file": path, "method": "dialog_card", "box": rect}
+    # Visible dialogs only: the page keeps hidden modal containers (div.content-modal) that match first otherwise.
+    default_sel = "[role='dialog']:visible, .ant-modal-content:visible, [class*='modal' i][class*='content' i]:visible, [class*='modal' i]:visible"
+    dialog = page.locator(sel or default_sel)
+    if step.get("text"):
+        dialog = dialog.filter(has_text=step["text"])
+    dialog = dialog.first
+    dialog.wait_for(state="visible", timeout=3000)
+    # The matched element is often the full-screen overlay: descend to the dialog box itself.
+    vw = page.viewport_size["width"] if page.viewport_size else 1280
+    box = dialog.bounding_box() or {"width": vw}
+    target = dialog
+    if box["width"] > 0.9 * vw:
+        kids = dialog.locator(":scope > *")
+        for k in range(min(kids.count(), 8)):
+            kb = kids.nth(k).bounding_box()
+            if kb and 0.2 * vw < kb["width"] < 0.9 * vw and kb["height"] > 100:
+                target = kids.nth(k)
+                break
+    target.screenshot(path=path)
+    return {"file": path, "method": "dialog_screenshot"}
 
 
 def main():

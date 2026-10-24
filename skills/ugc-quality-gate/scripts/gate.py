@@ -41,7 +41,8 @@ ROUTING = {"C1": "04_people (regenerate the AI person image)", "C2": "05_persona
            "C5": "06_prompts (hook clip)", "C6": "06_prompts (product description / reference in the failing clip)",
            "C7": "06_prompts (add a close-up of the personalized area) or 05_personalize", "C8": "08_assembly (end card / captions / disclaimer)"}
 HARD_FAIL_KINDS = ["misspelled_name", "other_brand", "profanity", "rude_gesture", "deformed_product", "wrong_personalization",
-                   "platform_ui", "watermark", "unsafe_content", "cast_count_mismatch", "no_audio", "copied_caption"]
+                   "platform_ui", "watermark", "unsafe_content", "cast_count_mismatch", "no_audio", "copied_caption",
+                   "caption_covers_personalization", "caption_covers_face"]
 
 
 def out(obj, code=0):
@@ -260,6 +261,57 @@ def parse_json(text):
         return None
 
 
+def verify_text_claims(hard, ctx, ff, video, base, key, model, tmp):
+    """Second opinion on name/text hard failures (misspelled, mirrored, reversed). The whole-ad evaluator reads small
+    brush lettering from contact sheets and sometimes reports a correct name as mirrored or misspelled. Each such claim
+    is re-read on full-size frames at its evidence timestamps next to the product previews; a claim that no frame
+    supports becomes a disputed observation instead of a hard failure. Returns (kept, disputed, extra_calls)."""
+    claim_re = re.compile(r"mirror|revers|backward|flipp|misspel|spell|letter", re.I)
+    previews = [pv for pv in ctx.get("product_previews", []) if pv.get("image") and os.path.isfile(pv["image"])]
+    expected = [t for t in ctx.get("expected_text", []) if t]
+    kept, disputed, calls = [], [], 0
+    for h in hard:
+        if h.get("kind") not in ("wrong_personalization", "misspelled_name") or not claim_re.search(str(h.get("detail", ""))) or not previews:
+            kept.append(h)
+            continue
+        times = [float(t) for t in re.findall(r"t\s*=\s*(\d+(?:\.\d+)?)", str(h.get("evidence", "")))][:3]
+        if not times:
+            kept.append(h)
+            continue
+        content = [{"type": "text", "text": "Image 1 (and the following preview images) show the product exactly as the client's website renders it. "
+                                             f"The text that must appear on it: {expected}. Then come frames from the ad. For EACH frame, read the "
+                                             "personalized text printed on the product letter by letter, left to right, and say whether it is mirrored "
+                                             "(reads right-to-left / letters flipped) or misspelled compared with the website preview. Stylized "
+                                             "handwriting, script fonts and perspective are NOT mirroring. Reply with ONLY JSON: "
+                                             '{"frames": [{"t": 3.6, "reads": "...", "mirrored": false, "misspelled": false}]}'}]
+        for pv in previews[:3]:
+            content.append({"type": "image_url", "image_url": {"url": data_url(pv["image"], 768)}})
+        for t in times:
+            frame = os.path.join(tmp, f"verify_{t:.2f}.jpg")
+            subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1", "-q:v", "3", frame], check=False)
+            if os.path.isfile(frame):
+                content.append({"type": "text", "text": f"Ad frame at t={t}s:"})
+                content.append({"type": "image_url", "image_url": {"url": data_url(frame, 1024)}})
+        try:
+            resp = call_model(base, key, model, [{"role": "user", "content": content}], max_tokens=800)
+            calls += 1
+            data = parse_json(resp["choices"][0]["message"]["content"] if isinstance(resp["choices"][0]["message"]["content"], str)
+                              else "".join(c.get("text", "") for c in resp["choices"][0]["message"]["content"])) or {}
+        except SystemExit:
+            data = {}
+        frames = data.get("frames") or []
+        # A real mirror or misspelling is printed the same way in every frame of the shot it is in, so most evidence frames show
+        # it; a misreading (stylized letters, rotated or folded fabric) usually hits one frame. Tested 23 Oct 2026 on a correct
+        # ad (1 of 3 frames flagged) and on the same ad flipped left-right (3 of 3 flagged).
+        flagged = [f for f in frames if f.get("mirrored") or f.get("misspelled")]
+        confirmed = flagged if len(flagged) * 2 >= max(1, len(frames)) else []
+        if frames and not confirmed:
+            disputed.append({**h, "second_opinion": frames})
+        else:
+            kept.append({**h, **({"second_opinion": frames} if frames else {})})
+    return kept, disputed, calls
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--video", required=True, help="final video (mp4)")
@@ -414,6 +466,12 @@ def main():
     if caption_issues and scores["C4"]["score"] > 3:
         scores["C4"]["score"] = 3
         scores["C4"]["reason"] += " | caption issues: " + "; ".join(caption_issues)[:200]
+    hard, disputed, verify_calls = verify_text_claims(hard, ctx, ff, args.video, base, key, args.model, tmp)
+    if disputed and scores["C2"]["score"] < args.pass_threshold and not any(h.get("kind") in ("wrong_personalization", "misspelled_name") for h in hard) \
+            and re.search(r"mirror|revers|backward|flipp|misspel|spell|letter", scores["C2"]["reason"], re.I):
+        # the low C2 rested on the same text claim the second reading disproved
+        scores["C2"]["score"] = args.pass_threshold
+        scores["C2"]["reason"] += " | raised: the text claim was disputed by a second reading of full-size frames (" + "; ".join(d.get("detail", "")[:80] for d in disputed) + ")"
     failing = [k for k, v in scores.items() if v["score"] < args.pass_threshold]
     verdict = "PASS" if not failing and not hard and not [d for d in deterministic if "not 9:16" in d] else "FAIL"
     routing = [{"criterion": k, "score": scores[k]["score"], "redo": ROUTING[k], "reason": scores[k]["reason"]} for k in failing]
@@ -421,13 +479,16 @@ def main():
         kind = h.get("kind")
         step = {"misspelled_name": "05_personalize / 06_prompts", "wrong_personalization": "05_personalize or 06_prompts (layout / portrait scale)", "deformed_product": "06_prompts",
                 "cast_count_mismatch": "03_plan (cast must equal the sample's cast_count) then 04_people / 06_prompts", "no_audio": "08_assembly (music / sfx / keep_clip_audio)",
-                "other_brand": "06_prompts or 08_assembly", "copied_caption": "08_assembly (rewrite the caption in new words)", "profanity": "05_personalize (choose another option) or 08_assembly",
+                "other_brand": "06_prompts or 08_assembly", "copied_caption": "08_assembly (rewrite the caption in new words)",
+                "caption_covers_personalization": "08_assembly (move the caption to a band clear of the printed name/design)",
+                "caption_covers_face": "08_assembly (move the caption to a band clear of faces)", "profanity": "05_personalize (choose another option) or 08_assembly",
                 "rude_gesture": "05_personalize (choose another artwork)", "platform_ui": "06_prompts", "watermark": "06_prompts",
                 "unsafe_content": "04_people / 06_prompts"}.get(kind, "review")
         routing.append({"hard_failure": kind, "redo": step, "reason": h.get("detail", ""), "evidence": h.get("evidence", "")})
     usage = resp.get("usage", {})
     report = {"ok": True, "verdict": verdict, "tag": tag, "model": args.model, "video": info, "clips": clip_infos, "scores": scores,
-              "hard_failures": hard, "deterministic_checks": deterministic, "visible_text": visible,
+              "hard_failures": hard, "disputed_failures": disputed, "second_opinion_calls": verify_calls,
+              "deterministic_checks": deterministic, "visible_text": visible,
               "accepted_risks": ctx.get("accepted_risks", []), "accepted_risk_observations": parsed.get("accepted_risk_observations", []),
               "people_count": seen_people, "cast_count_expected": expected_people, "caption_issues": caption_issues,
               "people_consistent": parsed.get("people_consistent"), "product_matches_preview": parsed.get("product_matches_preview"),

@@ -17,6 +17,7 @@ from derive import derive_job
 from paths import ma_client
 
 POLL_S = float(os.environ.get("UI_SYNC_POLL_S", "5"))
+AUTO_RESUMES = int(os.environ.get("UI_AUTO_RESUMES", "3"))  # "continue" messages after model rate limits, per job
 FINISHED = {"done", "failed", "stopped", "awaiting_approval"}
 SLOW_POLL_S = 20
 # serverless: keep only small files on the instance disk; bigger media are served from ModelArk's presigned links
@@ -194,6 +195,8 @@ class JobSyncer:
                     (d / "costs.json").write_text(json.dumps(costs.compute(d, store.files_dir(d), events), indent=1))
                 except Exception as e:
                     log(f"{job_id}: costs: {type(e).__name__}: {str(e)[:160]}")
+            if self._auto_resume(job, events):
+                store.write_job(d, job)
             derived = derive_job(job, events, store.files_dir(d))
             job["status"] = derived["status"]
             job["summary"] = {"current_step": derived["current_step"], "n_events": len(events),
@@ -201,6 +204,34 @@ class JobSyncer:
                               "verdict": derived["quality"][-1]["verdict"] if derived["quality"] else None}
             store.write_job(d, job)
             return {"new_events": len(new), "new_files": saved, "status": derived["status"]}
+
+    def _auto_resume(self, job: dict, events: list) -> bool:
+        """A session that went idle because the model provider stayed busy (retries exhausted on a rate limit or
+        model error) is not waiting for anyone: after a minute, tell it to continue. At most AUTO_RESUMES times per job,
+        never when a person has written since. Returns True when a message was sent."""
+        idle_i = next((i for i in range(len(events) - 1, -1, -1) if events[i].get("type") in ("session.status_idle", "session.status_running")), None)
+        if idle_i is None or events[idle_i].get("type") != "session.status_idle":
+            return False
+        if (events[idle_i].get("stop_reason") or {}).get("type") != "retries_exhausted":
+            return False
+        err = next((e for e in reversed(events[:idle_i + 1]) if e.get("type") == "session.error"), None)
+        kind = str(((err or {}).get("error") or {}).get("type") or "")
+        if not kind.startswith("model_"):
+            return False
+        if any(e.get("type") == "user.message" for e in events[idle_i:]) or job.get("auto_resumes", 0) >= AUTO_RESUMES:
+            return False
+        from derive import parse_ts
+        at = parse_ts(events[idle_i].get("processed_at"))
+        if at is None or time.time() - at.timestamp() < 60:
+            return False
+        try:
+            self.client().send_message(job["session_id"], "The model was busy for a moment (rate limit). Continue exactly where you left off.")
+        except Exception as e:
+            log(f"{job['id']}: auto-resume failed: {type(e).__name__}: {str(e)[:160]}")
+            return False
+        job["auto_resumes"] = job.get("auto_resumes", 0) + 1
+        log(f"{job['id']}: auto-resumed after {kind} ({job['auto_resumes']}/{AUTO_RESUMES})")
+        return True
 
     def _run(self, job_id: str, wake: threading.Event) -> None:
         idle_polls = 0

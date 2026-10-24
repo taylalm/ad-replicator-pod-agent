@@ -120,6 +120,14 @@ def first_pass_windows(events: List[dict]) -> Dict[int, Tuple[float, float]]:
             ls = max([u for u in user_ts if u < ld] + [s])
             windows[n] = (ls, ld)
         prev_end = done[n]
+    # the step in progress counts too (from its start, or its last rework message, to the newest event)
+    current = [n for n in started if n not in done and n > max(done, default=0)]
+    end = _ts(events[-1].get("processed_at")) if events else None
+    if current and end is not None:
+        n = max(current)
+        s = max([u for u in user_ts if started[n] + 1 < u <= end] + [started[n]])
+        if end > s:
+            windows[n] = (s, end)
     return windows
 
 
@@ -184,17 +192,18 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
     cache_path = job_dir / "cost_cache.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     paid_path = files_dir / "paid_calls.json"
-    calls = []
-    if paid_path.exists():
-        try:
-            d = json.loads(paid_path.read_text())
-            calls = d if isinstance(d, list) else d.get("calls", [])
-        except (ValueError, OSError):
-            calls = []
+    from derive import read_paid_calls
+    calls = read_paid_calls(paid_path)
     b = {k: {"first_pass": 0.0, "total": 0.0, "count_first": 0, "count_total": 0} for k in ("seedance", "seedream", "evaluator", "agent")}
     seedance_tokens = 0
     for c in calls:
-        if not isinstance(c, dict) or str(c.get("status", "")).lower() not in ("succeeded", "success", "ok", "done"):
+        status = str(c.get("status", "")).lower()
+        rec_status = str((cache.get(str(c.get("id", ""))) or {}).get("status") or "").lower()
+        if rec_status:  # a Seedance task's own record (logged as "submitted" by batch runs) is the truth
+            status = rec_status
+        if str(c.get("kind", "")).lower() == "clip_check":
+            status = "succeeded"  # a check is billed whatever its verdict (agents log the exit code or verdict here)
+        if not isinstance(c, dict) or status not in ("succeeded", "success", "ok", "done"):
             continue  # failed or rejected submissions are not billed
         kind = str(c.get("kind", "")).lower()
         cid, note = str(c.get("id", "")), str(c.get("note", ""))
@@ -212,7 +221,8 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         elif kind == "seedream":
             price = _seedream_price(note)
             t = _first_mention(events, cid) if not cid.startswith("unrecorded") else None
-        elif kind == "evaluator":
+        elif kind in ("evaluator", "clip_check"):
+            kind = "evaluator"  # per-clip checks use the same evaluator model and price
             price = PRICES["evaluator_call_estimate"]
             t = _first_mention(events, cid)
         else:
@@ -309,13 +319,9 @@ def mp4_duration(read, size: int) -> Optional[float]:
 
 def fetch_seedance_usage(client, job_dir: Path, files_dir: Path) -> int:
     """Caches each Seedance task's usage/resolution/duration/created_at once (sync thread). Returns how many were added."""
-    paid_path = files_dir / "paid_calls.json"
-    if not paid_path.exists():
-        return 0
-    try:
-        d = json.loads(paid_path.read_text())
-        calls = d if isinstance(d, list) else d.get("calls", [])
-    except (ValueError, OSError):
+    from derive import read_paid_calls
+    calls = read_paid_calls(files_dir / "paid_calls.json")
+    if not calls:
         return 0
     cache_path = job_dir / "cost_cache.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}

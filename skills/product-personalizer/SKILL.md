@@ -35,7 +35,7 @@ python3 /mnt/skills/product-personalizer/scripts/personalize.py probe \
 python3 /mnt/skills/product-personalizer/scripts/personalize.py run --plan /mnt/session/outputs/personalizer/plan_lily.json
 ```
 
-6. Open every captured image. Confirm the name is spelled correctly, the photo or avatar appears, and the chosen options show. Then crop and zoom into the artwork and check it is ad-safe: no profanity, rude gestures, other brands or off-brand content (see the content check in `references/action_plan.md`). If a step failed, read `error_step_XX.png`, fix that step and rerun the whole plan once. If it fails again, stop and report.
+6. Read the run's JSON first: `options` (each choice and whether it stayed selected), `warning`, `reapplied_options`, `recovered_from` and capture `method` explain most problems without a rerun. The script confirms photo-editor dialogs, re-applies options the page reset and falls back through several capture methods by itself (see `references/action_plan.md`). Then open every captured image. Confirm the name is spelled correctly, the photo or avatar appears, and the chosen options show. Then crop and zoom into the artwork and check it is ad-safe: no profanity, rude gestures, other brands or off-brand content (see the content check in `references/action_plan.md`). If a step failed, read `error_step_XX.png`, fix that step and rerun the whole plan once. If it fails again, stop and report. To save time with several people, personalize them in one page load (one capture per person) instead of one run each.
 
 7. Capture two or three more personalized variants in the same run (different colour, quote/animal, name) with `capture_dialog` on the site's preview dialog, for the options montage.
 8. Report the preview path(s), the variant dialog screenshots and the gallery files. The preview is the product's source of truth (which side carries what, where the portrait sits); describe that layout in words for the prompt step.
@@ -44,6 +44,6 @@ python3 /mnt/skills/product-personalizer/scripts/personalize.py run --plan /mnt/
 
 - Never add to cart, buy, check out, log in, subscribe or enter personal or payment details. The script refuses clicks on such controls; do not work around it.
 - Upload only AI-generated images created in this session.
-- One page load per run, one product at a time. If the site returns 429 (Too Many Requests), stop and tell the user; do not retry in a loop.
+- One page load per run; several people can be personalized one after another in it (one capture each). If the site returns 429 (Too Many Requests), stop and tell the user; do not retry in a loop.
 - Do not change the site's prices or claims; report them exactly as shown on the page.
 - Page structures change. If the probe shows different fields than expected, adapt the plan to what the probe shows; do not guess selectors.

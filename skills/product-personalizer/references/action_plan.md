@@ -35,7 +35,17 @@
 | `capture` | `selector`, `file`, optional `method` | Saves the preview: exports a `<canvas>` as PNG, or screenshots any other element. |
 | `screenshot` | optional `selector`, `file`, `full_page` | Saves a screenshot for checking. |
 
-Every step accepts `timeout_ms` (default 30000) and `"snapshot": true` (screenshot after the step).
+Every step accepts `timeout_ms`, `"snapshot": true` (screenshot after the step) and `"optional": true` (a failure is logged and the run continues). Clicks, fills and captures are capped at 20 s: an element that exists is clickable within seconds, and a selector that matches nothing fails after about 8 s. Only waits (`wait_for`, `wait_text_gone`) keep long timeouts.
+
+### What the script handles by itself (do not add steps for these)
+
+- **Photo editor dialogs.** After an upload, a site may open its own editor ("Edit Photo" with Apply/Cancel). Before every click, fill or capture, the script confirms such a dialog (Apply, Done, Save, OK, Crop). A plan step that clicks "Apply" or "Done" waits for the editor only while one is still expected, and passes at once when it was already confirmed. You can also write `{"action": "confirm_editor"}`.
+- **Options the page resets.** Each option click (tile, pill, swatch) is checked: `"selected": true` in the log means the page marks it as chosen. Before every Preview click and every `capture`, chosen options that the page has since reset (an upload can reset the background colour) are clicked again (`reapplied_options` in the log). A later click on another tile of the same group replaces the earlier choice (`replaces`). The result lists `options` with their final state and a `warning` if one did not stay selected. Choosing options after the upload is still the safest order.
+- **One recovery per click.** If a click fails, the script confirms any editor, closes pop-ups and tries the same control again, also by its role or visible text (`recovered_from` in the log). `visible=True` in a selector is read as `visible=true`.
+- **Capture fallbacks.** `capture` exports the canvas even when a dialog covers it, then tries an element screenshot, closes a covering dialog and tries again, and finally saves a viewport screenshot with `"method": "viewport_fallback"` and a `warning`: open that image and crop it before use.
+- **`wait_text_gone`** first waits up to 4 s (`appear_ms`) for the notice to appear, so it cannot pass before processing has started.
+
+Read the run's JSON before looking at screenshots: `seconds`, `options`, `warning` and the per-step notes usually say what happened. Rerun the whole plan only when the result has `"ok": false` or a capture is wrong.
 
 Tips:
 - Run `probe` first and look at `probe_form.png`: option labels in the screenshot tell you which radio or swatch is which.
@@ -60,7 +70,9 @@ Zoom into the personalized artwork (crop the preview) and check for profanity, r
 
 - Style/size choices are label tiles with hidden radio inputs: use `click_text` with `"exact": false` on the visible label, not `click` on the `input[type=radio]`.
 - The photo-processing notice differs per store/page ("Your Photo is being Prepared", "Image Processing...", then "Ready to Preview and Edit!"). Use `wait_text_gone` on the text the probe screenshot shows, with `timeout_ms` 90000, or `wait_for` the "Ready" text; processing took about 30 s.
-- The hidden upload input is `form.personalized-form input[type=file][accept="image/*"]` (not the review-photo upload elsewhere on the page). If an "Edit Photo" crop dialog opens, click its Apply/Done button (never a purchase control).
+- The hidden upload input is `form.personalized-form input[type=file][accept="image/*"]` (not the review-photo upload elsewhere on the page). An "Edit Photo" dialog opens after processing; the script confirms it (Apply) by itself.
+- Uploading a photo can reset the background colour to the first tile (seen 22 Oct 2026). Pick the colour after the upload; the script also re-applies it before Preview.
+- Several people in one page load work: after a capture, pick the next colour, upload the next photo, wait for processing, fill the next name, Preview, capture. Each person costs about 30 s instead of a full run (about 90 s).
 - Background colour tiles are not in a fixed colour order across pages: read the tile `background`/`image` from the probe before choosing by colour.
 - Expect `canvas.lower-canvas` to be composed before the form's status text updates; capture after clicking Preview and a 3 s wait.
 

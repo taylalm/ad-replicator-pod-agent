@@ -67,7 +67,7 @@ python3 /mnt/skills/ugc-quality-gate/scripts/gate.py \
 
    Add `--clip /mnt/session/outputs/07_clips/<id>.mp4` (repeatable) to score clips before assembly, `--max-frames 12` to change the sample density, `--dry-run` to build the contact sheets and print the request without calling the model.
 
-4. Read `report_<tag>.json` / `report_<tag>.md` (the tag is the `--out` folder name, e.g. `round_1`; contact sheets are `quality_<tag>_sheet_NN.jpg`): `verdict` (PASS / FAIL), `scores` C1-C8 with reason and evidence (frame timestamps), `hard_failures`, `routing` (which step to redo for each failure), `visible_text` (what the evaluator read on the product). Look at the contact sheets yourself only to understand a failure, not to overrule the gate.
+4. Read `report_<tag>.json` / `report_<tag>.md` (the tag is the `--out` folder name, e.g. `round_1`; contact sheets are `quality_<tag>_sheet_NN.jpg`): `verdict` (PASS / FAIL), `scores` C1-C8 with reason and evidence (frame timestamps), `hard_failures`, `routing` (which step to redo for each failure), `visible_text` (what the evaluator read on the product), `disputed_failures` (name/text claims - misspelled, mirrored - that a second reading of full-size frames at the evidence timestamps did not support: most evidence frames must show the problem; these are not hard failures, but mention them in the delivery note), `second_opinion_calls`. Captions covering a face or the personalized design are hard failures (`caption_covers_face`, `caption_covers_personalization`). Look at the contact sheets yourself only to understand a failure, not to overrule the gate.
 
 5. Act on the routing: C1 -> regenerate the AI person image(s); C2/C7 -> personalizer run or the clip prompt; C3-C6 -> the failing clip's Seedance prompt; C8 -> the edit plan (end card / captions). Maximum 3 retries per item; then deliver the best attempt flagged for human review. Keep every round's report (`round_1`, `round_2`, ...).
 
@@ -81,3 +81,14 @@ python3 /mnt/skills/ugc-quality-gate/scripts/gate.py \
 - One evaluator call per run (plus one per `--clip`); do not loop the gate to fish for a pass. If the model call fails, report the error; do not score manually.
 - `ARK_API_KEY` is read from the environment only; never print it.
 - Frames and references are sent to the model as base64 data URLs; keep the total under 20 images per call.
+
+## Checking several clips
+
+Run the clip checks side by side instead of one after another (each takes 40-60 s; a tool call ends at 120 s):
+
+```bash
+python3 /mnt/skills/ugc-quality-gate/scripts/check_batch.py run --jobs /mnt/session/outputs/07_clips/check_jobs.json \
+  --state /mnt/session/outputs/07_clips/check_state.json      # 4 at a time; call again until pending is 0, no sleep needed
+```
+
+`check_jobs.json` is a list of `{"name": "clip_03", "args": [<the clip_check.py arguments>]}`. Each result gives the verdict and the issues with their fixes. Name or text claims (mirrored, misspelled) are re-read on full-size frames and moved to `disputed` when most frames do not show them.

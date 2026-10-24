@@ -255,7 +255,7 @@ def wrap(draw, text, font, max_width, stroke):
 
 EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U0001F900-\U0001F9FF⭐⭕‼⁉™ℹ↔-↙↩↪⌚⌛⌨⏏⏩-⏳⏸-⏺Ⓜ▪▫▶◀◻-◾⤴⤵⬅-⬇⬛⬜〰〽㊗㊙❤❣♥♦♠♣️‍]+")
-EMOJI_FONT_PATHS = ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",)
+EMOJI_FONT_PATHS = ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/System/Library/Fonts/Apple Color Emoji.ttc")
 
 
 def emoji_font():
@@ -263,10 +263,11 @@ def emoji_font():
     from PIL import ImageFont
     for candidate in EMOJI_FONT_PATHS:
         if os.path.isfile(candidate):
-            try:
-                return ImageFont.truetype(candidate, 109)
-            except OSError:
-                continue
+            for size in (109, 160, 96):  # Noto Color Emoji: 109; Apple Color Emoji (macOS): 160 or 96
+                try:
+                    return ImageFont.truetype(candidate, size)
+                except OSError:
+                    continue
     return None
 
 
@@ -356,13 +357,14 @@ def boxes_overlap(a, b, pad=0.02):
     return not (a[2] + pad < b[0] or b[2] + pad < a[0] or a[3] + pad < b[1] or b[3] + pad < a[1])
 
 
-def detect_faces(ffmpeg, video, t, cache):
-    """Face boxes (normalised) in the frame at t seconds, from the vision model (seed-2-0-lite); [] on any failure.
+def detect_layout(ffmpeg, video, t, cache):
+    """Face boxes and personalized-design boxes (normalised) in the frame at t seconds, from the vision model
+    (seed-2-0-lite): {"faces": [...], "product": [...]}; empty lists on any failure.
     Only runs when ARK_API_KEY is available and plan.avoid_faces is not false."""
     key = f"{video}@{round(t, 1)}"
     if key in cache:
         return cache[key]
-    boxes = []
+    found = {"faces": [], "product": []}
     api_key = os.environ.get("ARK_API_KEY")
     if api_key:
         try:
@@ -374,11 +376,15 @@ def detect_faces(ffmpeg, video, t, cache):
             if os.path.isfile(frame):
                 with open(frame, "rb") as fh:
                     b64 = base64.b64encode(fh.read()).decode()
-                body = {"model": os.environ.get("FACE_MODEL", "seed-2-0-lite-260428"), "temperature": 0, "max_tokens": 400,
+                body = {"model": os.environ.get("FACE_MODEL", "seed-2-0-lite-260428"), "temperature": 0, "max_tokens": 500,
                         "messages": [{"role": "user", "content": [
                             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}},
-                            {"type": "text", "text": "List every human face in this image (real people and printed cartoon portraits of people) as bounding boxes normalised to 0-1: "
-                                                     "reply with ONLY a JSON array like [{\"x0\":0.1,\"y0\":0.2,\"x1\":0.3,\"y1\":0.4}], or [] if there is no face."}]}]}
+                            {"type": "text", "text": "Give bounding boxes normalised to 0-1 for (a) every human face (real people and printed cartoon portraits "
+                                                     "of people) and (b) the key personalized element on the product: a TIGHT box around the printed name(s) together "
+                                                     "with the portrait, character or motif printed next to them (on a blanket, garment, mug, bag, socks...); not the "
+                                                     "whole product, not an all-over background pattern. Reply with ONLY JSON like "
+                                                     "{\"faces\": [{\"x0\":0.1,\"y0\":0.2,\"x1\":0.3,\"y1\":0.4}], \"product\": [{\"x0\":0.2,\"y0\":0.4,\"x1\":0.8,\"y1\":0.7}]}; "
+                                                     "use [] for a kind that is not in the image."}]}]}
                 req = urllib.request.Request((os.environ.get("ARK_BASE_URL") or "https://ark.ap-southeast.bytepluses.com/api/v3") + "/chat/completions",
                                              data=json.dumps(body).encode(), headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
                 with urllib.request.urlopen(req, timeout=90) as resp:
@@ -386,29 +392,48 @@ def detect_faces(ffmpeg, video, t, cache):
                 txt = out["choices"][0]["message"]["content"]
                 if isinstance(txt, list):
                     txt = "".join(c.get("text", "") for c in txt)
-                m = re.search(r"\[.*\]", txt, re.S)
+                m = re.search(r"[\[{].*[\]}]", txt, re.S)
                 if m:
-                    for b in json.loads(m.group(0)):
-                        box = (float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"]))
-                        if 0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1:
-                            boxes.append(box)
+                    data = json.loads(m.group(0))
+                    if isinstance(data, list):  # an answer with faces only
+                        data = {"faces": data}
+                    for kind in ("faces", "product"):
+                        for b in data.get(kind) or []:
+                            box = (float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"]))
+                            if 0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1:
+                                found[kind].append(box)
             shutil.rmtree(tmp, ignore_errors=True)
         except Exception as error:  # the layout falls back to the requested position
             print(json.dumps({"warning": f"face detection skipped: {str(error)[:120]}"}), file=sys.stderr)
-    cache[key] = boxes
-    return boxes
+    cache[key] = found
+    return found
 
 
-def place_caption(size, text, spec, faces):
-    """Move the caption to the first band (top, upper, lower, bottom, mid) that does not overlap a face."""
-    if not faces:
+def detect_faces(ffmpeg, video, t, cache):
+    return detect_layout(ffmpeg, video, t, cache)["faces"]
+
+
+def _overlap_area(a, b):
+    return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def place_caption(size, text, spec, faces, product=()):
+    """Keep the caption off every face and off the personalized design. Bands in order: the requested one, top, upper,
+    bottom, lower, then middle. The first band clear of both wins; if none is clear, the band with the least covered
+    area (faces weigh 3, the design 2), so a caption never lands in the middle of a worn print just to dodge a face."""
+    if not faces and not product:
         return spec, None
-    order = [spec["y"]] + [POSITIONS[k] for k in ("top", "upper", "lower", "bottom", "middle")]
+    order = [spec["y"]] + [POSITIONS[k] for k in ("top", "upper", "bottom", "lower", "middle")]
+    best, best_cost = None, None
     for y in order:
         trial = dict(spec, y=y)
-        if not any(boxes_overlap(caption_box(size, text, trial), f) for f in faces):
+        box = caption_box(size, text, trial)
+        if not any(boxes_overlap(box, f) for f in faces) and not any(boxes_overlap(box, p, pad=0.02) for p in product):
             return trial, (None if y == spec["y"] else y)
-    return spec, None
+        cost = 3 * sum(_overlap_area(box, f) for f in faces) + 2 * sum(_overlap_area(box, p) for p in product)
+        if best_cost is None or cost < best_cost - 1e-6:
+            best, best_cost = y, cost
+    return dict(spec, y=best), (None if best == spec["y"] else best)
 
 
 def place_inset(size, ins, faces):
@@ -694,10 +719,11 @@ def main():
             spec = caption_spec(cap, (width, height))
             if avoid:
                 mid = (float(cap["start"]) + min(float(cap["end"]), duration)) / 2
-                faces = detect_faces(ffmpeg, base, mid, face_cache)
-                spec, new_y = place_caption((width, height), cap["text"], spec, faces)
+                found = detect_layout(ffmpeg, base, mid, face_cache)
+                faces = found["faces"]
+                spec, new_y = place_caption((width, height), cap["text"], spec, faces, found["product"])
                 if new_y is not None:
-                    moved.append({"caption": cap["text"][:40], "moved_to": round(new_y, 2), "faces": len(faces)})
+                    moved.append({"caption": cap["text"][:40], "moved_to": round(new_y, 2), "faces": len(faces), "product_areas": len(found["product"])})
             n = render_caption_layer(png, (width, height), cap["text"], spec)
             caption_lines.append(n)
             layers.append((png, float(cap["start"]), min(float(cap["end"]), duration)))

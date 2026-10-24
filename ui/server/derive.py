@@ -209,6 +209,17 @@ def parse_steps(events: List[dict], now_s: float) -> Dict[str, Any]:
             if n == 3 and status == "done":
                 plan_text = body or txt
                 plan_at = at
+    # a step re-run without a closing line (e.g. a second quality-check round) is over once a later step has finished
+    later_done = [n for n in steps if steps[n]["status"] == "done"]
+    for n, st in steps.items():
+        if st["status"] == "running" and any(m > n for m in later_done):
+            st["status"] = "done"
+    # delivery reported: steps the agent forgot to announce (no STEP line) were still part of the run
+    if steps.get(11, {}).get("status") == "done":
+        for n, st in steps.items():
+            if n < 11 and st["status"] == "pending":
+                st["status"] = "done"
+                st["inferred"] = True
     for st in steps.values():
         a = parse_ts(st["started_at"])
         b = parse_ts(st["finished_at"])
@@ -225,6 +236,17 @@ def parse_steps(events: List[dict], now_s: float) -> Dict[str, Any]:
         current = touched[-1] if touched else None
     return {"steps": [steps[n] for n in sorted(steps)], "current_step": current, "plan_text": plan_text,
             "plan_at": plan_at, "step_events": step_events}
+
+
+def _asks_user(events: List[dict]) -> bool:
+    """True when the agent's last message asks the user to choose or reply."""
+    for e in reversed(events):
+        if e.get("type") == "agent.message":
+            t = text_of(e.get("content"))
+            return bool(re.search(r"\breply\b|\byour options\b|\bchoose\b|\bwhich (one|option)\b|\?\s*$", t, re.I))
+        if e.get("type") == "user.message":
+            return False
+    return False
 
 
 # ----------------------------------------------------------------------------- status
@@ -299,6 +321,8 @@ def derive_status(events: List[dict], parsed: dict, auto_approve: bool, step_app
         status = "running"
     elif last_step and last_step[0] == 11 and last_step[1] == "done":
         status = "done"
+    elif last_step and last_step[1] == "failed" and phase == "idle" and _asks_user(events):
+        status = "stopped"  # the step stopped on a decision for the user (e.g. no ad-safe option): a pause, not a crash
     elif last_step and last_step[1] == "failed":
         status = "failed"
     elif session_errors and phase == "idle":
@@ -397,6 +421,29 @@ def read_json(path: Path) -> Optional[Any]:
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def read_paid_calls(path: Path) -> List[dict]:
+    """paid_calls.json as a list: a JSON array, {"calls": [...]}, or one JSON object per line (the agent writes either)."""
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    try:
+        data = json.loads(text)
+        data = data if isinstance(data, list) else (data.get("calls", []) if isinstance(data, dict) else [])
+    except ValueError:
+        data = []
+        for line in text.splitlines():
+            line = line.strip().rstrip(",")
+            if line.startswith("{"):
+                try:
+                    data.append(json.loads(line))
+                except ValueError:
+                    continue
+    return [c for c in data if isinstance(c, dict)]
 
 
 def list_files(files_dir: Path, job_id: str, visible_steps: Optional[set] = None) -> List[dict]:
@@ -618,7 +665,7 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
 def paid_calls_of(files_dir: Path, budget: dict, visible_steps: Optional[set]) -> dict:
     counts = {"seedream": 0, "seedance": 0, "evaluator": 0}
     entries = []
-    data = read_json(files_dir / "paid_calls.json") if (files_dir / "paid_calls.json").exists() else None
+    data = read_paid_calls(files_dir / "paid_calls.json")
     if isinstance(data, list):
         for c in data:
             if not isinstance(c, dict):

@@ -262,6 +262,9 @@ def validate_plan(plan, analysis=None):
             key_words = [w for w in re.findall(r"[a-z]{4,}", layout.lower()) if w not in ("with", "that", "this", "from", "exactly", "shows", "side")][:6]
             if sum(1 for w in key_words if w in low) < max(2, len(key_words) // 2):
                 warnings.append(f"{cid}: the product layout ({layout[:80]}...) is not restated in the prompt; say which side/area carries what, so the model does not mirror the sample")
+        if any(refs.get(r, {}).get("kind") == "staging" for r in cref):
+            warnings.append(f"{cid}: staging references must not show real people (sample frames with people are rejected by "
+                            "Seedance's privacy filter, and their faces could leak into the ad); use a frame without people or describe the staging in words")
         if any(refs.get(r, {}).get("kind") == "staging" for r in cref) and not re.search(r"(framing|wrap|drape|staging|composition)[^.]*as in @image", low):
             warnings.append(f"{cid}: a staging reference (sample keyframe) is attached but the prompt does not say 'framing / how the blankets wrap and drape as in @ImageN; the printed design follows @Image<product>'")
         if any(refs.get(r, {}).get("kind") == "texture" for r in cref) and "texture" not in low and "material" not in low:
@@ -316,7 +319,7 @@ def render(args):
     if not res["ok"]:
         out({"ok": False, "error": "plan is invalid; run validate", **res}, 1)
     out_dir = os.path.dirname(os.path.abspath(args.plan))
-    lines = ["#!/usr/bin/env bash", "# One billable Seedance task per line. Run them one at a time; never re-run a line whose result is uncertain.", "set -u"]
+    lines = ["#!/usr/bin/env bash", "# One billable Seedance task per line. Submit them together with generate-with-seedance batch.py; never re-run a line whose result is uncertain.", "set -u"]
     rendered, dry = [], []
     for clip in plan["clips"]:
         cmd = build_command(plan, clip)

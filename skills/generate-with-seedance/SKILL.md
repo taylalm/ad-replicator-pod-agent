@@ -27,6 +27,16 @@ node /mnt/skills/generate-with-seedance/scripts/seedance-generate.mjs \
   --download /mnt/session/outputs/clips
 ```
 
+   **Several clips: submit them together.** A tool call in the sandbox ends after about 2 minutes and one clip takes 3-5 minutes, so clips run one after another cost the sum of all clips. With a `commands.sh` from ugc-seedance-prompt-craft, submit every clip at once, then collect them:
+
+```bash
+python3 /mnt/skills/generate-with-seedance/scripts/batch.py submit --commands /mnt/session/outputs/06_prompts/commands.sh \
+  --state /mnt/session/outputs/07_clips/tasks.json            # optional: --clips clip_01,clip_04
+python3 /mnt/skills/generate-with-seedance/scripts/batch.py wait --state /mnt/session/outputs/07_clips/tasks.json
+```
+
+   `wait` polls every pending task for up to 100 s, downloads finished videos as `<task_id>.mp4` and prints a table; call it again until `pending` is 0. A clip already in the state file is never submitted twice; a submission with an uncertain result is marked `uncertain` and not retried. For a new attempt, give the clip a new id (for example `clip_02_v2`) in prompts.json, render again and submit that id with `--clips`.
+
 5. References:
    - `--reference-image` (repeatable) accepts an HTTPS URL, a data URL, or a local image file in the sandbox (png, jpg, jpeg, webp); local files are sent as base64 data URLs.
    - `--reference-video` (repeatable) accepts public HTTPS URLs only. Recommended length 4–30 s each.

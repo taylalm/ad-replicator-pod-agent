@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import sys
 import time
 import threading
@@ -385,43 +386,18 @@ if __name__ == "__main__":
                 reload=False)
 
 
-@app.post("/api/uploads")
-async def upload_reference(file: UploadFile = File(...), note: str = Form("")):
-    """Uploads a reference image/video/audio to the Files API; the id is passed back in POST /api/jobs references."""
-    if not file.filename:
-        raise HTTPException(422, "No file")
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", file.filename)[:80]
-    updir = DATA_DIR.parent / "uploads"
-    updir.mkdir(parents=True, exist_ok=True)
-    dest = updir / f"{int(time.time())}_{safe}"
-    with open(dest, "wb") as fh:
-        fh.write(await file.read())
+def _send_upload(dest: Path, safe: str, note: str, job_id: Optional[str] = None) -> dict:
+    """Send a saved upload to the Files API; for an existing job, also mount it in its session under /mnt/session/uploads/."""
     client = _client()
-    try:
-        up = client.upload_file(str(dest))
-        info = client.wait_file_active(up["id"])
-    except Exception as e:
-        raise HTTPException(502, f"Upload to ModelArk failed: {str(e)[:300]}")
-    return {"file_id": up["id"], "filename": safe, "mount_name": safe, "mime_type": info.get("mime_type"), "bytes": info.get("bytes"), "note": note,
-            "local_name": dest.name}
-
-
-@app.post("/api/jobs/{job_id}/references")
-async def add_job_reference(job_id: str, file: UploadFile = File(...), note: str = Form("")):
-    """Upload a file for an existing job and mount it in its session under /mnt/session/uploads/ (for regenerations)."""
-    d = store.job_dir(job_id)
-    if d is None:
-        raise HTTPException(404, "Job not found")
-    job = store.read_job(d)
-    if job.get("demo") or not job.get("session_id"):
-        raise HTTPException(400, "Demo jobs cannot take new references")
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", file.filename or "reference")[:80]
-    updir = d / "uploads"
-    updir.mkdir(parents=True, exist_ok=True)
-    dest = updir / f"{int(time.time())}_{safe}"
-    with open(dest, "wb") as fh:
-        fh.write(await file.read())
-    client = _client()
+    if job_id is None:
+        try:
+            up = client.upload_file(str(dest))
+            info = client.wait_file_active(up["id"])
+        except Exception as e:
+            raise HTTPException(502, f"Upload to ModelArk failed: {str(e)[:300]}")
+        return {"file_id": up["id"], "filename": safe, "mount_name": safe, "mime_type": info.get("mime_type"), "bytes": info.get("bytes"),
+                "note": note, "local_name": dest.name}
+    job = store.read_job(store.job_dir(job_id))
     try:
         up = client.upload_file(str(dest))
         client.wait_file_active(up["id"])
@@ -430,6 +406,73 @@ async def add_job_reference(job_id: str, file: UploadFile = File(...), note: str
     except Exception as e:
         raise HTTPException(502, f"Upload to the agent session failed: {str(e)[:300]}")
     return {"ok": True, "path": f"/mnt/session/uploads/{mount}", "filename": safe, "note": note, "file_id": up["id"]}
+
+
+def _upload_dir(job_id: Optional[str]) -> Path:
+    if job_id is None:
+        return DATA_DIR.parent / "uploads"
+    d = store.job_dir(job_id)
+    if d is None:
+        raise HTTPException(404, "Job not found")
+    job = store.read_job(d)
+    if job.get("demo") or not job.get("session_id"):
+        raise HTTPException(400, "Demo jobs cannot take new references")
+    return d / "uploads"
+
+
+def _safe_name(name: Optional[str], default: str = "upload") -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", name or default)[:80]
+
+
+@app.post("/api/uploads")
+async def upload_reference(file: UploadFile = File(...), note: str = Form("")):
+    """Uploads a reference image/video/audio to the Files API; the id is passed back in POST /api/jobs references."""
+    if not file.filename:
+        raise HTTPException(422, "No file")
+    safe = _safe_name(file.filename)
+    updir = _upload_dir(None)
+    updir.mkdir(parents=True, exist_ok=True)
+    dest = updir / f"{int(time.time())}_{safe}"
+    with open(dest, "wb") as fh:
+        fh.write(await file.read())
+    return _send_upload(dest, safe, note)
+
+
+@app.post("/api/uploads/chunk")
+async def upload_chunk(chunk: UploadFile = File(...), upload_id: str = Form(...), index: int = Form(...), total: int = Form(...),
+                       filename: str = Form(...), note: str = Form(""), job_id: str = Form("")):
+    """One piece of a large file (gateways cap request bodies, e.g. 16 MB on API Gateway). Pieces are kept until all `total`
+    have arrived; the last one joins them and sends the whole file on, answering like POST /api/uploads (or the job's
+    references endpoint when job_id is set). Needs every piece to reach the same server instance."""
+    if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", upload_id) or not (0 <= index < total <= 400):
+        raise HTTPException(422, "Bad upload_id, index or total")
+    jid = job_id or None
+    parts = _upload_dir(jid) / f"parts_{upload_id}"
+    parts.mkdir(parents=True, exist_ok=True)
+    with open(parts / f"{index:05d}", "wb") as fh:
+        fh.write(await chunk.read())
+    have = sorted(parts.iterdir())
+    if len(have) < total:
+        return {"received": len(have), "total": total}
+    safe = _safe_name(filename)
+    dest = parts.parent / f"{int(time.time())}_{safe}"
+    with open(dest, "wb") as out:
+        for part in have:
+            out.write(part.read_bytes())
+    shutil.rmtree(parts, ignore_errors=True)
+    return _send_upload(dest, safe, note, jid)
+
+
+@app.post("/api/jobs/{job_id}/references")
+async def add_job_reference(job_id: str, file: UploadFile = File(...), note: str = Form("")):
+    """Upload a file for an existing job and mount it in its session under /mnt/session/uploads/ (for regenerations)."""
+    safe = _safe_name(file.filename, "reference")
+    updir = _upload_dir(job_id)
+    updir.mkdir(parents=True, exist_ok=True)
+    dest = updir / f"{int(time.time())}_{safe}"
+    with open(dest, "wb") as fh:
+        fh.write(await file.read())
+    return _send_upload(dest, safe, note, job_id)
 
 
 # ----------------------------------------------------------------------------- web pages (static export) and sign-in

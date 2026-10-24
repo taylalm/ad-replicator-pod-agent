@@ -21,7 +21,7 @@
 
 | Field | Notes |
 |---|---|
-| `references[].kind` | `person`, `product`, `texture` (product-page material/pattern photo), `photo` (the original AI photo for photo products), `staging` (a sample scene keyframe used only for framing, wrap/drape and scale; the printed design still follows the product reference), `setting`, `style` (images: local sandbox path or https URL) or `video` (public https URL only) |
+| `references[].kind` | `person`, `product`, `texture` (product-page material/pattern photo), `photo` (the original AI photo for photo products), `staging` (a sample scene keyframe used only for framing, wrap/drape and scale; the printed design still follows the product reference. Only frames with NO real person in them: Seedance rejects references showing real people (privacy filter, seen 22 Oct 2026); for a staging idea with people, describe it in words or use a Seedream still made with the AI people), `setting`, `style` (images: local sandbox path or https URL) or `video` (public https URL only) |
 | `product.layout` | the website preview's layout in words (which side carries what); the validator warns when a product shot does not restate it |
 | `product.size_statement` | the chosen size with a scale cue; the validator requires its dimensions (e.g. "50 x 60") in every product shot prompt |
 | `cast_count` | number of people in the sample; the replica casts the same number |

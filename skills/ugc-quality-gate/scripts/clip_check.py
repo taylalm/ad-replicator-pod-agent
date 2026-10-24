@@ -24,6 +24,7 @@ Writes <out>/check_<clip>.json and .md. Exit 0 PASS, 1 FAIL, 2 usage/setup error
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -36,7 +37,7 @@ HARD = ["wrong_product", "wrong_personalization", "misspelled_text", "foreign_te
 CHECKLIST = """Check every frame. Report a problem only with a timestamp and what you see.
 1. Product identity: each product matches its reference image exactly - artwork, which side/area carries which element (never mirrored or swapped), colours, all-over pattern, shape and proportions. When several personalized items appear, each item carries only its own person's portrait and name.
 2. Text: every word printed on a product is spelled exactly as in its reference; garbled, invented, extra or foreign words (names that are not in the references) are failures. Ignore captions; there should be none.
-3. Physical realism: wearables are worn the way people wear them - one sock or shoe per foot, a pair on a pair of feet, nothing worn twice or stacked on one limb; an item nobody wears obeys gravity (socks lie flat or slump, a blanket drapes or lies folded) and never stands upright or keeps a body shape as if an invisible person wore it; nothing floats; fabric does not pass through bodies or furniture.
+3. Physical realism: wearables are worn the way people wear them - one sock or shoe per foot, a pair on a pair of feet, nothing worn twice or stacked on one limb; a wearable nobody wears obeys gravity (socks lie flat or slump, a garment drapes or lies folded) and never keeps a body shape as if an invisible person wore it, while bags, mugs, boxes and ornaments keep their own shape and may stand; nothing floats; fabric does not pass through bodies or furniture.
 4. Anatomy: every visible person has the right number of feet, legs, hands and fingers; bodies are not merged; feet belong to a visible person.
 5. Size: the product's size relative to people and furniture matches the stated real size.
 6. Intent: the shot shows what the intent says (people, count, action, framing); faces visible when the intent says so.
@@ -114,8 +115,8 @@ def main():
     content.append({"type": "text", "text": CHECKLIST + "\nFirst observe, then judge. Observe SINGLE items, never pairs: each sock, shoe or glove is its own item (a pair worn on two feet is two observations, one per foot). For EVERY single product item visible in each key frame fill one observation: "
                     "who wears it (a person's name, 'unknown person', or 'nobody'), its 3D state ('worn' on a body part; 'flat' = empty and collapsed, "
                     "lying on a surface with no volume; 'filled' = empty but keeping the volume or shape of a body part, e.g. a sock with a rounded heel, "
-                    "toes pointing up, a hollow leg or an open cuff standing up; 'held'; 'folded'), and for a worn item how many items are on that same single body part (one foot, one hand), counting itself: 1 is normal, 2 means two socks on one foot."
-                    "\nReply with ONLY JSON: {\"observations\": [{\"t\": seconds, \"item\": \"...\", \"worn_by\": \"...\", \"state\": \"worn|flat|filled|held|folded\", "
+                    "toes pointing up, a hollow leg or an open cuff standing up - 'filled' applies to WEARABLES only; 'standing' = a non-wearable that keeps its own shape on a surface, e.g. a tote bag, mug, box or ornament, which is normal; 'held'; 'folded'), whether the item is a wearable (sock, shoe, glove, hat, garment), and for a worn item how many items are on that same single body part (one foot, one hand), counting itself: 1 is normal, 2 means two socks on one foot."
+                    "\nReply with ONLY JSON: {\"observations\": [{\"t\": seconds, \"item\": \"...\", \"worn_by\": \"...\", \"wearable\": true, \"state\": \"worn|flat|filled|standing|held|folded\", "
                     "\"items_on_that_body_part\": n}], \"verdict\": \"PASS\"|\"FAIL\", \"product_match\": 1-5, "
                     "\"physics\": 1-5, \"issues\": [{\"kind\": one of " + json.dumps(HARD + ["minor"]) + ", \"t\": seconds, \"detail\": \"...\", "
                     "\"fix\": \"how to change the prompt or references\"}], \"summary\": \"one sentence\"}"})
@@ -140,7 +141,10 @@ def main():
         state = str(ob.get("state", "")).lower()
         worn_by = str(ob.get("worn_by", "")).lower()
         n_on = ob.get("items_on_that_body_part")
-        if state == "filled" and worn_by in ("nobody", "no one", "none", ""):
+        item = str(ob.get("item", "")).lower()
+        # only wearables can look worn by an invisible person; bags, mugs, boxes and ornaments keep their own shape
+        not_wearable = ob.get("wearable") is False or re.search(r"\b(bag|tote|mug|cup|tumbler|bottle|box|ornament|frame|pillow|cushion|blanket|notebook|keychain|book)s?\b", item)
+        if state == "filled" and worn_by in ("nobody", "no one", "none", "") and not not_wearable:
             issues.append({"kind": "physics_violation", "t": ob.get("t"), "detail": f"{ob.get('item')} is worn by nobody but keeps the shape of a body part (hollow, upright or foot-shaped)",
                            "fix": "describe the item as empty and lying flat and collapsed on the surface, no feet inside, or show it worn by a visible person"})
         if isinstance(n_on, (int, float)) and n_on > 1:
@@ -155,10 +159,30 @@ def main():
         seen.add(k)
         uniq.append(i)
     issues = uniq
+    # second opinion on name/text claims (stylized lettering and folded fabric are often misread as mirrored or misspelled):
+    # the claim stays only if most of the re-read frames show it, as in the final gate
+    disputed = []
+    claim_re = re.compile(r"mirror|revers|backward|flipp|misspel|spell|letter", re.I)
+    for i in list(issues):
+        if i.get("kind") not in ("misspelled_text", "wrong_personalization") or not claim_re.search(str(i.get("detail", ""))):
+            continue
+        ts = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", str(i.get("t", "")))] + [float(x) for x in (i.get("also_at") or []) if isinstance(x, (int, float))]
+        if len(ts) >= 2 and len(re.findall(r"\d+(?:\.\d+)?", str(i.get("t", "")))) == 2:  # a range "a-b": three frames across it
+            lo, hi = ts[0], ts[1]
+            ts = [lo + (hi - lo) * f for f in (0.2, 0.5, 0.8)] + ts[2:]
+        if not ts:
+            ts = [t for t, _ in frames]
+        claim = {"kind": "wrong_personalization", "detail": str(i.get("detail", "")), "evidence": ", ".join(f"t={t:.2f}s" for t in ts[:3])}
+        ctx = {"product_previews": [{"image": p["image"]} for p in products], "expected_text": a.expected_text}
+        kept, gone, _ = gate.verify_text_claims([claim], ctx, ff, a.clip, base, key, a.model, tmp)
+        if gone:
+            issues.remove(i)
+            disputed.append({**i, "second_opinion": gone[0].get("second_opinion")})
     hard = [i for i in issues if i.get("kind") in HARD]
-    verdict = "FAIL" if hard or str(res.get("verdict", "")).upper() != "PASS" else "PASS"
+    only_disputed = disputed and not issues
+    verdict = "FAIL" if hard or (str(res.get("verdict", "")).upper() != "PASS" and not only_disputed) else "PASS"
     report = {"clip": a.clip, "verdict": verdict, "observations": res.get("observations"), "product_match": res.get("product_match"), "physics": res.get("physics"),
-              "hard_failures": hard, "issues": issues, "summary": res.get("summary"), "frames": [t for t, _ in frames], "sheet": sheet,
+              "hard_failures": hard, "issues": issues, "disputed": disputed, "summary": res.get("summary"), "frames": [t for t, _ in frames], "sheet": sheet,
               "model": a.model, "usage": resp.get("usage")}
     jpath = os.path.join(a.out, f"check_{tag}.json")
     with open(jpath, "w") as fh:
@@ -168,7 +192,7 @@ def main():
     md += [f"- **{i.get('kind')}** at {i.get('t')} s: {i.get('detail')} -> fix: {i.get('fix')}" for i in issues] or ["- no issues"]
     with open(os.path.join(a.out, f"check_{tag}.md"), "w") as fh:
         fh.write("\n".join(md) + "\n")
-    gate.out({"ok": True, **{k: report[k] for k in ("clip", "verdict", "product_match", "physics", "hard_failures", "summary")}, "report": jpath},
+    gate.out({"ok": True, **{k: report[k] for k in ("clip", "verdict", "product_match", "physics", "hard_failures", "disputed", "summary")}, "report": jpath},
              0 if verdict == "PASS" else 1)
 
 
