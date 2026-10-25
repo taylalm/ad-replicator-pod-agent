@@ -23,6 +23,7 @@
 |---|---|
 | `references[].kind` | `person`, `product`, `texture` (product-page material/pattern photo), `photo` (the original AI photo for photo products), `staging` (a sample scene keyframe used only for framing, wrap/drape and scale; the printed design still follows the product reference. Only frames with NO real person in them: Seedance rejects references showing real people (privacy filter, seen 22 Oct 2026); for a staging idea with people, describe it in words or use a Seedream still made with the AI people), `setting`, `style` (images: local sandbox path or https URL) or `video` (public https URL only) |
 | `product.layout` | the website preview's layout in words (which side carries what); the validator warns when a product shot does not restate it |
+| `product.spec` | ONE description of the personalized product as it really is (from the website preview and the product page's own photos): shape, where the print sits and how much of the item/head it covers, plain areas, material, how it sits when worn or held. The validator requires it word for word in every clip that shows the product (product reference or `shows_product: true`); pass the same text to clip_check as the product's expected description |
 | `product.size_statement` | the chosen size with a scale cue; the validator requires its dimensions (e.g. "50 x 60") in every product shot prompt |
 | `cast_count` | number of people in the sample; the replica casts the same number |
 | `clips[].audio` | `true` adds `--generate-audio`; the prompt must then say "no music, no BGM" and describe natural sound only |
@@ -30,6 +31,9 @@
 | `clips[].references` | ordered list of reference ids; the prompt addresses them as `@Image1`, `@Image2` ... (images) and `@Video1` ... (videos) in that order |
 | `clips[].duration` | 4-30 (integer seconds) or -1 |
 | `clips[].scenes` | the sample scene indexes this clip replaces (used by video-assembly to time captions) |
+| `clips[].payoff` | `{"t": seconds into the clip, "what": ...}`: the scene's payoff beat (from `analysis.scenes[].beats`), placed early (1-3 s) |
+| `clips[].use` | `[start, end]` clip seconds the edit keeps: about the sample scene length and containing the payoff. After generation, clip_check `--payoff` reports the real `payoff_window`; the edit plan's start/end follow it |
+| `clips[].shows_product` | `true` for first-frame clips whose still shows the product (no product reference attached), so the spec check applies |
 | `clips[].attempt` | bump when regenerating after a quality-gate retry |
 | `clips[].seed` | optional integer |
 | `clips[].first_frame` | path of a still to animate (sets `--first-frame` and ratio adaptive); only for shots whose opening frame does not show the product; never a composited product still |

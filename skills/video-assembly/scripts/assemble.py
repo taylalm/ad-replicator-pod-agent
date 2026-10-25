@@ -381,7 +381,8 @@ def detect_layout(ffmpeg, video, t, cache):
                             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}},
                             {"type": "text", "text": "Give bounding boxes normalised to 0-1 for (a) every human face (real people and printed cartoon portraits "
                                                      "of people) and (b) the key personalized element on the product: a TIGHT box around the printed name(s) together "
-                                                     "with the portrait, character or motif printed next to them (on a blanket, garment, mug, bag, socks...); not the "
+                                                     "with the portrait, character or motif printed next to them (on a blanket, garment, mug, bag, socks...), or a printed pet or person "
+                                                     "face worn as a mask (box the whole printed face); not the "
                                                      "whole product, not an all-over background pattern. Reply with ONLY JSON like "
                                                      "{\"faces\": [{\"x0\":0.1,\"y0\":0.2,\"x1\":0.3,\"y1\":0.4}], \"product\": [{\"x0\":0.2,\"y0\":0.4,\"x1\":0.8,\"y1\":0.7}]}; "
                                                      "use [] for a kind that is not in the image."}]}]}
@@ -415,6 +416,11 @@ def detect_faces(ffmpeg, video, t, cache):
 
 def _overlap_area(a, b):
     return max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+
+
+def caption_clear(size, text, spec, faces, product=()):
+    box = caption_box(size, text, spec)
+    return not any(boxes_overlap(box, f) for f in faces) and not any(boxes_overlap(box, p, pad=0.02) for p in product)
 
 
 def place_caption(size, text, spec, faces, product=()):
@@ -715,18 +721,50 @@ def main():
         avoid = plan.get("avoid_faces", True)
         face_cache = {}
         for i, cap in enumerate(plan.get("captions", [])):
-            png = os.path.join(tmp, f"caption_{i:02d}.png")
             spec = caption_spec(cap, (width, height))
+            c0, c1 = float(cap["start"]), min(float(cap["end"]), duration)
+            pieces = [(c0, c1, spec)]
             if avoid:
-                mid = (float(cap["start"]) + min(float(cap["end"]), duration)) / 2
-                found = detect_layout(ffmpeg, base, mid, face_cache)
-                faces = found["faces"]
-                spec, new_y = place_caption((width, height), cap["text"], spec, faces, found["product"])
-                if new_y is not None:
-                    moved.append({"caption": cap["text"][:40], "moved_to": round(new_y, 2), "faces": len(faces), "product_areas": len(found["product"])})
-            n = render_caption_layer(png, (width, height), cap["text"], spec)
+                # a caption that runs over several clips must stay clear in every one of them: look at each clip it
+                # spans (30% and 70% into the overlap). One position clear of everything wins; when none is, the
+                # caption is split at the cuts and each piece is placed on its own (adjacent pieces at the same
+                # height are merged), so a head at the top of one shot never ends up under the text.
+                wins = []
+                for a, b in part_times:
+                    lo, hi = max(a, c0), min(b, c1)
+                    if hi - lo > 0.2:
+                        found = {"faces": [], "product": []}
+                        for t in (lo + 0.3 * (hi - lo), lo + 0.7 * (hi - lo)):
+                            f = detect_layout(ffmpeg, base, t, face_cache)
+                            found["faces"] += f["faces"]
+                            found["product"] += f["product"]
+                        wins.append((lo, hi, found))
+                if not wins:
+                    wins = [(c0, c1, detect_layout(ffmpeg, base, (c0 + c1) / 2, face_cache))]
+                faces = [x for w in wins for x in w[2]["faces"]]
+                product = [x for w in wins for x in w[2]["product"]]
+                placed, new_y = place_caption((width, height), cap["text"], spec, faces, product)
+                if len(wins) > 1 and not caption_clear((width, height), cap["text"], placed, faces, product):
+                    pieces = []
+                    for lo, hi, found in wins:
+                        sp, _ = place_caption((width, height), cap["text"], spec, found["faces"], found["product"])
+                        if pieces and abs(pieces[-1][2]["y"] - sp["y"]) < 1e-6:
+                            pieces[-1] = (pieces[-1][0], hi, pieces[-1][2])
+                        else:
+                            pieces.append((lo, hi, sp))
+                    pieces[0] = (c0, pieces[0][1], pieces[0][2])
+                    pieces[-1] = (pieces[-1][0], c1, pieces[-1][2])
+                    moved.append({"caption": cap["text"][:40], "split_at_cuts": [[round(p[0], 2), round(p[1], 2), round(p[2]["y"], 2)] for p in pieces],
+                                  "faces": len(faces), "product_areas": len(product)})
+                else:
+                    pieces = [(c0, c1, placed)]
+                    if new_y is not None:
+                        moved.append({"caption": cap["text"][:40], "moved_to": round(new_y, 2), "faces": len(faces), "product_areas": len(product)})
+            for k, (p0, p1, sp) in enumerate(pieces):
+                png = os.path.join(tmp, f"caption_{i:02d}_{k:02d}.png")
+                n = render_caption_layer(png, (width, height), cap["text"], sp)
+                layers.append((png, p0, p1))
             caption_lines.append(n)
-            layers.append((png, float(cap["start"]), min(float(cap["end"]), duration)))
         for i, ins in enumerate(plan.get("insets", [])):
             png = os.path.join(tmp, f"inset_{i:02d}.png")
             if avoid:

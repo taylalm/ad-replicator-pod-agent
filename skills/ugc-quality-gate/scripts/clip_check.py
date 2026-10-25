@@ -18,7 +18,11 @@ Usage:
   python3 clip_check.py --clip clip_06.mp4 --intent "<what the clip must show>" \
       --product "Harper's socks|05_personalize/product_harper.png|left sole: quote, right sole: owl + HARPER" \
       [--product "mockup|uploads/socks_mockup.png|bookshelf pattern covers leg and top of foot"] \
-      [--person "Harper|04_people/person_harper.png"] [--expected-text HARPER] --out 07_clips/checks
+      [--person "Harper|04_people/person_harper.png"] [--expected-text HARPER] \
+      [--payoff "the dog walks in and the woman bursts out laughing"] --out 07_clips/checks
+The product reference images (and their expected descriptions) are the product truth: wording about the product in
+the intent never overrides them. With --payoff, the report gives `payoff_window` [start, end] in clip seconds (where
+the payoff is visible): the edit plan keeps that window, and a payoff that never happens is an intent_mismatch.
 Writes <out>/check_<clip>.json and .md. Exit 0 PASS, 1 FAIL, 2 usage/setup error. One evaluator call per clip.
 """
 import argparse
@@ -40,7 +44,8 @@ CHECKLIST = """Check every frame. Report a problem only with a timestamp and wha
 3. Physical realism: wearables are worn the way people wear them - one sock or shoe per foot, a pair on a pair of feet, nothing worn twice or stacked on one limb; a wearable nobody wears obeys gravity (socks lie flat or slump, a garment drapes or lies folded) and never keeps a body shape as if an invisible person wore it, while bags, mugs, boxes and ornaments keep their own shape and may stand; nothing floats; fabric does not pass through bodies or furniture.
 4. Anatomy: every visible person has the right number of feet, legs, hands and fingers; bodies are not merged; feet belong to a visible person.
 5. Size: the product's size relative to people and furniture matches the stated real size.
-6. Intent: the shot shows what the intent says (people, count, action, framing); faces visible when the intent says so.
+6. Intent: the shot shows what the intent says (people, count, action, framing, reactions); faces visible when the intent says so.
+7. Product truth: the PRODUCT REFERENCE images and their expected descriptions are the truth about the product (shape, print size and position, plain areas). If the intent's wording about the product disagrees with the reference image, follow the reference image and do not fail the clip over that wording; mention the disagreement as "minor".
 Be strict: any physics or anatomy error, any wrong or misspelled product text, any swapped portrait or name is a hard failure."""
 
 
@@ -54,6 +59,7 @@ def _repair(txt):
             return m.group(0)
         n = re.search(r"\d+(\.\d+)?", val)
         return m.group(1) + (json.dumps(val) if m.group(1).strip().startswith('"t"') else (n.group(0) if n else "null"))
+    txt = re.sub(r'("payoff_window"\s*:\s*)\[\s*([\d.]+)\s*(?:-|to|–)\s*([\d.]+)\s*\]', r'\1[\2, \3]', txt)
     return re.sub(r'("(?:t|items_on_that_body_part|product_match|physics)"\s*:\s*)(.*?)(?=\s*,\s*"[A-Za-z_]+"\s*:|\s*[}\]])', num, txt)
 
 
@@ -66,6 +72,7 @@ def main():
     ap.add_argument("--person", action="append", default=[], help='"name|image" (repeat)')
     ap.add_argument("--expected-text", action="append", default=[], help="exact words that must appear on the product (repeat)")
     ap.add_argument("--size", help="real product size statement, e.g. '50 x 60 inch blanket'")
+    ap.add_argument("--payoff", help="the moment the edit must keep (e.g. 'the barista bursts out laughing'); reported as payoff_window")
     ap.add_argument("--frames", type=int, default=6)
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default=os.environ.get("QUALITY_GATE_MODEL", gate.DEFAULT_MODEL))
@@ -104,7 +111,8 @@ def main():
     sheet = gate.contact_sheet(frames, os.path.join(a.out, f"check_{tag}_sheet.jpg"), cols=min(4, len(frames)), title=tag)
 
     content = [{"type": "text", "text": f"CLIP INTENT:\n{intent[:3000]}\n" + (f"REAL SIZE: {a.size}\n" if a.size else "")
-                + (f"EXACT TEXT ON THE PRODUCT: {', '.join(a.expected_text)}\n" if a.expected_text else "")}]
+                + (f"EXACT TEXT ON THE PRODUCT: {', '.join(a.expected_text)}\n" if a.expected_text else "")
+                + (f"PAYOFF (the moment the edit keeps): {a.payoff}\n" if a.payoff else "")}]
     for i, p in enumerate(products, 1):
         content += [{"type": "text", "text": f"PRODUCT REFERENCE {i} - {p['label']}: {p['expected']}"},
                     {"type": "image_url", "image_url": {"url": gate.data_url(p["image"], 768)}}]
@@ -118,7 +126,7 @@ def main():
                     "toes pointing up, a hollow leg or an open cuff standing up - 'filled' applies to WEARABLES only; 'standing' = a non-wearable that keeps its own shape on a surface, e.g. a tote bag, mug, box or ornament, which is normal; 'held'; 'folded'), whether the item is a wearable (sock, shoe, glove, hat, garment), and for a worn item how many items are on that same single body part (one foot, one hand), counting itself: 1 is normal, 2 means two socks on one foot."
                     "\nReply with ONLY JSON: {\"observations\": [{\"t\": seconds, \"item\": \"...\", \"worn_by\": \"...\", \"wearable\": true, \"state\": \"worn|flat|filled|standing|held|folded\", "
                     "\"items_on_that_body_part\": n}], \"verdict\": \"PASS\"|\"FAIL\", \"product_match\": 1-5, "
-                    "\"physics\": 1-5, \"issues\": [{\"kind\": one of " + json.dumps(HARD + ["minor"]) + ", \"t\": seconds, \"detail\": \"...\", "
+                    "\"physics\": 1-5, " + ("\"payoff_window\": [first second the payoff is visible, last second] or null if it never happens, " if a.payoff else "") + "\"issues\": [{\"kind\": one of " + json.dumps(HARD + ["minor"]) + ", \"t\": seconds, \"detail\": \"...\", "
                     "\"fix\": \"how to change the prompt or references\"}], \"summary\": \"one sentence\"}"})
     messages = [{"role": "system", "content": "You are a strict quality checker for AI-generated product video clips of a personalized-gifts brand. "
                  "You compare the clip with the product references and judge physical realism like a careful human viewer."},
@@ -130,11 +138,19 @@ def main():
     if not key:
         gate.fail("ARK_API_KEY missing")
     base = os.environ.get("ARK_BASE_URL", gate.DEFAULT_BASE)
-    resp = gate.call_model(base, key, a.model, messages, max_tokens=3500)
-    txt = resp["choices"][0]["message"]["content"]
-    if isinstance(txt, list):
-        txt = "".join(c.get("text", "") for c in txt)
-    res = gate.parse_json(txt) or gate.parse_json(_repair(txt)) or {"verdict": "FAIL", "issues": [{"kind": "minor", "detail": "evaluator reply was not JSON: " + txt[:300]}]}
+    res, raw = None, ""
+    for _ in range(2):  # an unreadable reply is asked once more before it counts as a failure
+        resp = gate.call_model(base, key, a.model, messages, max_tokens=3500)
+        txt = resp["choices"][0]["message"]["content"]
+        if isinstance(txt, list):
+            txt = "".join(c.get("text", "") for c in txt)
+        raw = txt
+        res = gate.parse_json(txt) or gate.parse_json(_repair(txt))
+        if res:
+            break
+    unreadable = not res
+    if unreadable:
+        res = {"verdict": "FAIL", "issues": [{"kind": "minor", "detail": "evaluator reply was not JSON: " + raw[:300]}]}
     issues = res.get("issues") or []
     # deterministic physics rules on the observations (the evaluator's verdict alone missed hollow standing socks)
     for ob in res.get("observations") or []:
@@ -178,12 +194,20 @@ def main():
         if gone:
             issues.remove(i)
             disputed.append({**i, "second_opinion": gone[0].get("second_opinion")})
+    payoff_window = res.get("payoff_window") if a.payoff else None
+    if isinstance(payoff_window, str):  # "0.5-2.5" or "0.5 to 2.5"
+        nums = re.findall(r"\d+(?:\.\d+)?", payoff_window)
+        payoff_window = [float(nums[0]), float(nums[-1])] if nums else None
+    if a.payoff and not unreadable and not (isinstance(payoff_window, list) and len(payoff_window) == 2):
+        issues.append({"kind": "intent_mismatch", "t": None, "detail": f"the payoff never happens: {a.payoff}",
+                       "fix": "put the payoff early in the clip timeline (e.g. 1-3s) and describe it as a visible action"})
+        payoff_window = None
     hard = [i for i in issues if i.get("kind") in HARD]
     only_disputed = disputed and not issues
     verdict = "FAIL" if hard or (str(res.get("verdict", "")).upper() != "PASS" and not only_disputed) else "PASS"
     report = {"clip": a.clip, "verdict": verdict, "observations": res.get("observations"), "product_match": res.get("product_match"), "physics": res.get("physics"),
-              "hard_failures": hard, "issues": issues, "disputed": disputed, "summary": res.get("summary"), "frames": [t for t, _ in frames], "sheet": sheet,
-              "model": a.model, "usage": resp.get("usage")}
+              "payoff_window": payoff_window, "hard_failures": hard, "issues": issues, "disputed": disputed, "summary": res.get("summary"), "frames": [t for t, _ in frames], "sheet": sheet,
+              "model": a.model, "usage": resp.get("usage"), **({"raw_reply": raw[:4000]} if unreadable else {})}
     jpath = os.path.join(a.out, f"check_{tag}.json")
     with open(jpath, "w") as fh:
         json.dump(report, fh, indent=2, ensure_ascii=False)
@@ -192,7 +216,7 @@ def main():
     md += [f"- **{i.get('kind')}** at {i.get('t')} s: {i.get('detail')} -> fix: {i.get('fix')}" for i in issues] or ["- no issues"]
     with open(os.path.join(a.out, f"check_{tag}.md"), "w") as fh:
         fh.write("\n".join(md) + "\n")
-    gate.out({"ok": True, **{k: report[k] for k in ("clip", "verdict", "product_match", "physics", "hard_failures", "disputed", "summary")}, "report": jpath},
+    gate.out({"ok": True, **{k: report[k] for k in ("clip", "verdict", "product_match", "physics", "payoff_window", "hard_failures", "disputed", "summary")}, "report": jpath},
              0 if verdict == "PASS" else 1)
 
 

@@ -222,9 +222,20 @@ def check(path):
         elif not isinstance(data[key], kind):
             problems.append(f"'{key}' must be a {kind.__name__}")
     for i, scene in enumerate(data.get("scenes", []) if isinstance(data.get("scenes"), list) else []):
-        for key in ("index", "start", "end", "description", "shot", "purpose"):
+        for key in ("index", "start", "end", "description", "shot", "purpose", "camera_position", "pose", "motion", "product_state", "beats", "reactions", "staging_frame", "real_face_visible"):
             if key not in scene:
                 problems.append(f"scenes[{i}] missing '{key}'")
+        beats = scene.get("beats")
+        if "beats" in scene and (not isinstance(beats, list) or not beats or not all(isinstance(b, dict) and "t" in b and "what" in b for b in beats)):
+            problems.append(f"scenes[{i}].beats must be a non-empty list of {{t, what}}")
+        elif isinstance(beats, list) and beats:
+            try:
+                if any(not (float(scene["start"]) - 0.3 <= float(b["t"]) <= float(scene["end"]) + 0.3) for b in beats):
+                    problems.append(f"scenes[{i}].beats: every t must lie inside the scene ({scene['start']}-{scene['end']} s, video time)")
+            except (TypeError, ValueError, KeyError):
+                problems.append(f"scenes[{i}].beats: t must be a number")
+        if "reactions" in scene and not isinstance(scene.get("reactions"), list):
+            problems.append(f"scenes[{i}].reactions must be a list ([] when nobody reacts)")
     hook = data.get("hook") if isinstance(data.get("hook"), dict) else {}
     for key in ("start", "end", "type", "description"):
         if key not in hook:

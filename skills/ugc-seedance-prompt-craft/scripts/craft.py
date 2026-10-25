@@ -89,6 +89,8 @@ def template(args):
             shots[-1] = shots[-1].replace(f"-{t}s:", f"-{duration}s:", 1)
         clips.append({
             "id": f"clip_{i:02d}", "mode": "reference", "duration": duration, "attempt": 1,
+            "payoff": {"t": "<seconds into the clip where the scene's payoff beat lands; put it early, 1-3 s>", "what": "<the payoff beat from analysis.scenes[].beats>"},
+            "use": ["<start>", "<end: start + the sample scene length>"],
             "scenes": [s["index"] for s in grp],
             "references": ["<person_ref_id>", "<product_ref_id>"],
             "prompt": "REPLACE ME. Bind references first (@Image1 is ..., @Image2 is ...), then shots:\n" + "\n".join(shots)
@@ -99,6 +101,7 @@ def template(args):
         "product": {"name": "<product name from the product page>", "names": ["<NAME>"],
                     "personalization": "<what is personalized, e.g. animal + quote + name on the sole>",
                     "layout": "<exact layout from the website preview, e.g. left sole: quote text + books; right sole: owl artwork + name; leg: bookshelf pattern; cuff/heel/toe teal>",
+                    "spec": "<ONE description of the personalized product as it really looks (from the website preview and the product page's own photos): shape, where the print sits and how big it is, plain areas, material; and how it sits when worn or held. Pasted unchanged into every prompt that shows the product and passed to clip_check as the expected description>",
                     "size_statement": "<chosen size with a scale cue, e.g. 50 x 60 inches (127 x 152 cm): held up by an 8-year-old it is taller than the child and wider than their arm span; leave empty for products without a size>"},
         "cast_count": "<number of people in the sample analysis; the replica uses the same number>",
         "do_not_copy": analysis.get("do_not_copy", []),
@@ -218,7 +221,7 @@ def validate_plan(plan, analysis=None):
         ff = str(c.get("first_frame") or "")
         if ff and re.search(r"printed|overlay|composite", ff, re.I):
             errors.append(f"{cid}: first_frame {ff} looks like a composited product still; use the product-personalizer images as references instead")
-        if mode == "reference" and not cref:
+        if mode == "reference" and not cref and not c.get("first_frame"):
             warnings.append(f"{cid}: reference mode without references is plain text-to-video (no person/product consistency)")
         if mode == "edit":
             if not videos:
@@ -275,6 +278,50 @@ def validate_plan(plan, analysis=None):
             key_words = [w for w in re.findall(r"[a-z]{4,}", layout.lower()) if w not in ("with", "that", "this", "from", "exactly", "shows", "side")][:6]
             if sum(1 for w in key_words if w in low) < max(2, len(key_words) // 2):
                 warnings.append(f"{cid}: the product layout ({layout[:80]}...) is not restated in the prompt; say which side/area carries what, so the model does not mirror the sample")
+        # one product description for every still, clip and check: rewording it per clip produced contradictions
+        # (e.g. "plain black crown above the print" in one prompt, "no black band above the print" in the next) and
+        # the clip check then failed correct clips against the wrong wording
+        spec = str(plan.get("product", {}).get("spec") or "")
+        if spec and not spec.startswith("<") and (shows_product or c.get("shows_product")):
+            if " ".join(spec.lower().split()) not in " ".join(low.split()):
+                errors.append(f"{cid}: the product is in this shot but product.spec is not in the prompt word for word; paste it unchanged (never reword the product per clip)")
+        # the edit keeps only part of each clip: the payoff must happen inside that window
+        payoff, use = c.get("payoff"), c.get("use")
+        if not (isinstance(payoff, dict) and "t" in payoff and payoff.get("what")):
+            errors.append(f"{cid}: give payoff {{\"t\": seconds into the clip, \"what\": the moment the edit must keep}} (from the scene's payoff beat)")
+        elif not isinstance(payoff["t"], (int, float)):
+            errors.append(f"{cid}: payoff.t must be a number of seconds into the clip")
+        elif not (isinstance(use, list) and len(use) == 2 and all(isinstance(x, (int, float)) for x in use)):
+            errors.append(f"{cid}: give use [start, end] in clip seconds: the window the edit keeps, about as long as the sample scene(s), containing the payoff")
+        else:
+            pt = float(payoff["t"])
+            if not (0 <= use[0] < use[1] <= (duration if duration != -1 else 30)):
+                errors.append(f"{cid}: use {use} must lie inside the {duration} s clip")
+            elif not (use[0] <= pt <= use[1]):
+                errors.append(f"{cid}: payoff at {pt} s is outside use {use}: the edit would cut it (move the payoff earlier in the timeline or the window later)")
+            if duration != -1 and pt > duration - 1:
+                warnings.append(f"{cid}: payoff at {pt} s is in the last second; generated clips often end before it lands")
+            if analysis and c.get("scenes"):
+                sc = [x for x in analysis.get("scenes", []) if x.get("index") in c["scenes"]]
+                want = sum(float(x["end"]) - float(x["start"]) for x in sc if "start" in x and "end" in x)
+                if want and abs((use[1] - use[0]) - want) > 0.8:
+                    warnings.append(f"{cid}: use window {use[1] - use[0]:.1f} s differs from the sample scene length {want:.1f} s")
+        if analysis and c.get("scenes"):
+            for x in [x for x in analysis.get("scenes", []) if x.get("index") in c["scenes"]]:
+                motion = str(x.get("motion") or "").lower()
+                if motion and motion != "static" and re.search(r"\bparked\b|stays? (completely )?still|no (camera )?motion|static (camera|shot)", low) \
+                        and re.search(r"driv|moving|slid|walk|pan|follow|track", motion):
+                    warnings.append(f"{cid}: the sample scene {x.get('index')} moves ({motion[:70]}) but the prompt freezes it (parked / stays still); keep the sample's motion")
+                for r in x.get("reactions") or []:
+                    verb = re.findall(r"laugh|bark|point|film|giggl|smil|cheer|gasp|turn", str(r.get("what", "")).lower())
+                    if verb and not any(v in low for v in verb):
+                        warnings.append(f"{cid}: the sample's reaction ({r.get('who')}: {r.get('what')}) is missing from the prompt; reactions carry the joke")
+                cam = str(x.get("camera_position") or "").lower()
+                if "outside" in cam and re.search(r"\binside\b|driver'?s seat|in the car", low) and not re.search(r"outside", low):
+                    warnings.append(f"{cid}: the sample camera is outside ({cam[:60]}); the prompt places it inside")
+        if videos and not all(str(refs.get(v, {}).get("generated", "")).lower() in ("true", "1") for v in videos):
+            warnings.append(f"{cid}: a video reference that shows real people is refused by Seedance (InputVideoSensitiveContentDetected.PrivacyInformation, "
+                            "tested 25 Oct 2026 on the sample); use only footage without identifiable people or our own generated clips (mark them \"generated\": true)")
         if any(refs.get(r, {}).get("kind") == "staging" for r in cref):
             warnings.append(f"{cid}: staging references must not show real people (sample frames with people are rejected by "
                             "Seedance's privacy filter, and their faces could leak into the ad); use a frame without people or describe the staging in words")

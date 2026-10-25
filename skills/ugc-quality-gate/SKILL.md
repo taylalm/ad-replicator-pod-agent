@@ -11,7 +11,21 @@ description: Independent quality check of a generated UGC ad (final MP4 or singl
 
 Put the sample's on-screen text (and any reference ad's) in context.json as `reference_captions`, the approved offers as `offer_lines`. A caption that copies a reference (60%+ similar or sharing 4+ words in a row) is the hard failure `copied_caption`, routed to 08_assembly.
 
+## Still check (run on every first-frame still before it is animated)
+
+`scripts/still_check.py` puts the still next to the sample's frame for that shot and lists the staging differences (pose and orientation, camera, framing, how the product is worn at that moment, people and reactions), product errors (holes, print size, colours, mirrored), extra hands and copied text. About a cent per still; a clip costs about 50 times more, so fix the still first.
+
+```bash
+python3 /mnt/skills/ugc-quality-gate/scripts/still_check.py --still 07_clips/stills/s1_hook.png \
+  --sample-frame 01_analysis/keyframes/scene_01_a.jpg --scene "<the analysis scene: shot, pose, camera_position, motion, product_state, reactions>" \
+  --product "balaclava|05_personalize/product_ethan.png|<product.spec>" [--person "Ethan|04_people/person_ethan.png"] --out 07_clips/checks
+```
+
+Exit 1 on FAIL: apply each issue's `fix` to the still prompt and remake the still (at most twice). Body orientation is not reliably judged by the default checker model; that is why the sample frame itself goes into the still prompt when it shows no real face (ugc_shot_patterns.md).
+
 ## Per-clip check (run on every clip before it is accepted)
+
+`clip_check.py --payoff "<the moment the edit keeps>"` also reports `payoff_window` [start, end]; the edit plan keeps that window. The product reference image is the product truth: prompt wording that disagrees with it never fails a clip.
 
 `scripts/clip_check.py` checks ONE clip right after it is generated, before step 7 is done: product truth, text, physics, anatomy, size and intent. One small evaluator call per clip.
 
