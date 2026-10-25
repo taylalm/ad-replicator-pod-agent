@@ -122,7 +122,8 @@ def first_pass_windows(events: List[dict]) -> Dict[int, Tuple[float, float]]:
             last_done[n] = t
     # rework = a human message that is not a plain approval (CHANGES:, REGENERATE:, REVISION:, ADD CLIP:, notes...)
     user_ts = sorted(t for t in (_ts(e.get("processed_at")) for e in events
-                                 if e.get("type") == "user.message" and not re.match(r"\s*APPROVE\b", _text(e), re.I)) if t)
+                                 if e.get("type") == "user.message" and not re.match(r"\s*APPROVE\b", _text(e), re.I)
+                                 and not _is_resume(_text(e))) if t)
     windows = {}
     prev_end = first_t
     for n in sorted(done):
@@ -358,7 +359,7 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
         "cost_first_pass_usd": round(sum(v["first_pass"] for v in b.values()), 2),
         "cost_total_usd": round(sum(v["total"] for v in b.values()), 2),
         "breakdown": b, "seedance_tokens": seedance_tokens, "prices": PRICES,
-        "models": _model_rows(mu), "waiting_s": waiting_time(events),
+        "models": _model_rows(mu), "waiting_s": waiting_time(events), "stalled_s": waiting_time(events, stalls=True),
         "by_step": [{"step": n, **{k: round(v, 3) for k, v in row.items()}, "usd": round(sum(row.values()), 3)} for n, row in sorted(by_step.items())],
         "notes": ["Evaluator calls are an estimate per call (about 15K input and 1.5K output tokens).",
                   "Seedream input images beyond the first ($0.003 each) are not in the log and are left out.",
@@ -388,8 +389,17 @@ def _model_rows(m: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def waiting_time(events: List[dict]) -> int:
-    """Seconds the session sat idle waiting for a person: from each idle event to the next user message."""
+RESUME_RE = re.compile(r"^\s*The model was busy for a moment \(rate limit\)", re.I)
+
+
+def _is_resume(text: str) -> bool:
+    """The automatic 'continue' sent after a model rate limit: not a human change and not a review."""
+    return bool(RESUME_RE.match(text or ""))
+
+
+def waiting_time(events: List[dict], stalls: bool = False) -> int:
+    """Seconds the session sat idle waiting for a person (from each idle event to the next user message). With
+    stalls=True: the idle time after model rate limits instead (ended by the automatic 'continue')."""
     total, idle_at = 0.0, None
     for e in events:
         t = _ts(e.get("processed_at"))
@@ -398,7 +408,8 @@ def waiting_time(events: List[dict]) -> int:
         if e.get("type") == "session.status_idle":
             idle_at = t
         elif e.get("type") == "user.message" and idle_at is not None:
-            total += max(0.0, t - idle_at)
+            if _is_resume(_text(e)) == stalls:
+                total += max(0.0, t - idle_at)
             idle_at = None
     return int(total)
 

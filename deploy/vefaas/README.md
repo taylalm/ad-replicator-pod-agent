@@ -56,7 +56,7 @@ It contains `run.sh`, the backend, the built web pages, the recorded demo run, r
 - **File lifetime:**
   - ModelArk lists session files with a 7-day `expire_at`, but in practice they stop downloading after about **one day** (tested 22 Oct 2026).
   - The package therefore ships read-only "showcase" copies of finished jobs from `ui/data/jobs` (list in `SHOWCASE_JOBS` in `build_package.sh`).
-  - Discovery skips sessions created before the package was built (`UI_DISCOVER_AFTER`).
+  - Discovery skips sessions created before the package was built (`UI_DISCOVER_AFTER`). To keep recent runs on the list, build with an earlier time: `DISCOVER_AFTER=2026-10-24T00:00:00Z bash deploy/vefaas/build_package.sh`.
   - New jobs made on the cloud site keep their videos for about a day. To keep them longer, enable **Storage** in the function settings: mount a TOS bucket, for example at `/mnt/data`, then set `UI_DATA_DIR=/mnt/data/jobs` and `UI_DOWNLOAD_MAX_BYTES=0` so the instance copies every file into the bucket.
 - **Large uploads:** the API Gateway rejects request bodies over 16 MB (tested 23 Oct 2026). The web app therefore sends files over 12 MB in 8 MB pieces and the server joins them. The pieces must reach the same instance, so keep the function at **one** instance (step 1).
 

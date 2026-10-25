@@ -80,6 +80,41 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
     return saved
 
 
+def restore_sample(client, job: dict, dest: Path) -> Optional[str]:
+    """An uploaded sample video lives only in the session's uploads folder, not in its outputs: a fresh serverless
+    instance has lost the local copy made at job creation. Fetch it back from the file mounted in the session
+    (its Files API record carries a download link while the file is active, about a week). At most 3 tries per job."""
+    sample = str((job.get("inputs") or {}).get("sample_url") or "")
+    if not sample.startswith("/mnt/session/uploads/") or job.get("sample_restored") or job.get("sample_tries", 0) >= 3:
+        return None
+    if any((dest / f"sample.{x}").exists() for x in ("mp4", "mov", "webm")):
+        return None
+    job["sample_tries"] = job.get("sample_tries", 0) + 1
+    try:
+        res = next((r for r in client.get_session(job["session_id"]).get("resources") or []
+                    if r.get("type") == "file" and r.get("mount_path") == sample), None)
+        meta = client.get(f"/files/{res['file_id']}") if res else {}
+        url = meta.get("download_url")
+        if not url or (meta.get("bytes") or 0) > 200_000_000:
+            return None
+        ext = (re.search(r"\.(\w+)$", sample) or [None, "mp4"])[1].lower()
+        name = f"sample.{ext}"
+        dest.mkdir(parents=True, exist_ok=True)
+        tmp = dest / (name + ".part")
+        with urllib.request.urlopen(url, timeout=300) as r, open(tmp, "wb") as out:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+        os.replace(tmp, dest / name)
+        job["sample_restored"] = True
+        return name
+    except Exception as e:
+        log(f"{job.get('id')}: sample restore: {type(e).__name__}: {str(e)[:120]}")
+        return None
+
+
 class JobSyncer:
     def __init__(self):
         self.threads: Dict[str, threading.Thread] = {}
@@ -188,6 +223,7 @@ class JobSyncer:
             index = job.get("files_index") or {}
             saved = sync_files(self.client(), job["session_id"], store.files_dir(d), index)
             job["files_index"] = index
+            restore_sample(self.client(), job, store.files_dir(d))
             if new or saved or not (d / "costs.json").exists():
                 try:  # production time and cost of one video (official list prices), see costs.py
                     import costs

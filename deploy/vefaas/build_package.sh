@@ -62,7 +62,8 @@ mkdir -p "$UI_DATA_DIR"
 exec python3 -m uvicorn main:app --app-dir ui/server --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips '*'
 EOF
 
-sed -i.bak "s/__BUILD_TIME__/$(date -u +%Y-%m-%dT%H:%M:%SZ)/" "$STAGE/run.sh" && rm -f "$STAGE/run.sh.bak"
+# DISCOVER_AFTER (ISO time) keeps sessions started before this build on the job list, e.g. runs still under review
+sed -i.bak "s/__BUILD_TIME__/${DISCOVER_AFTER:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}/" "$STAGE/run.sh" && rm -f "$STAGE/run.sh.bak"
 rm -f "$OUT/ad-replicator-vefaas.zip"
 (cd "$STAGE" && zip -qr "$OUT/ad-replicator-vefaas.zip" . -x '*/__pycache__/*' '*.pyc')
 echo "[build] $(du -h "$OUT/ad-replicator-vefaas.zip" | cut -f1) $OUT/ad-replicator-vefaas.zip"
