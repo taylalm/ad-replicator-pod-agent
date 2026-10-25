@@ -69,9 +69,9 @@ Options:
   --resolution 480p|720p|1080p   Default 480p (testing)
   --first-frame IMG          First frame (forces ratio adaptive)
   --last-frame IMG
-  --reference-image IMG      Repeat. HTTPS URL, data URL, or a local file path in the sandbox
+  --reference-image IMG      Repeat. HTTPS URL, data URL, asset://<id>, or a local file path in the sandbox
   --image IMG                Alias for --reference-image
-  --reference-video URL      Repeat. Public HTTPS URL only (4-30 s per video recommended)
+  --reference-video URL      Repeat. Public HTTPS URL or asset://<id> (4-30 s per video recommended)
   --omni-task-type auto|reference|edit|extend
   --output-format mp4|mov    mov is Seedance 2.5 only
   --draft                    Draft mode (Seedance 2.5 only)
@@ -177,10 +177,15 @@ function httpsUrl(value) {
   try { return new URL(value).protocol === "https:"; } catch { return false; }
 }
 
-// Images may be HTTPS URLs, data URLs, or local sandbox files (converted to data URLs).
+// Private asset library ids (docs: private-virtual-avatar-library-guide-preview): asset://<Asset_Id>, status Active.
+function assetUri(value) {
+  return /^asset:\/\/asset-[A-Za-z0-9-]+$/.test(String(value));
+}
+
+// Images may be HTTPS URLs, data URLs, asset:// ids, or local sandbox files (converted to data URLs).
 function imageRef(value, name) {
   if (value === undefined) return undefined;
-  if (httpsUrl(value)) return value;
+  if (httpsUrl(value) || assetUri(value)) return value;
   if (/^data:image\/[a-z+]+;base64,/i.test(value)) return value;
   if (existsSync(value) && statSync(value).isFile()) {
     const mime = IMAGE_MIME[extname(value).toLowerCase()];
@@ -194,7 +199,7 @@ const firstFrame = imageRef(args.first_frame, "--first-frame");
 const lastFrame = imageRef(args.last_frame, "--last-frame");
 const references = args.reference_images.map(value => imageRef(value, "--reference-image"));
 for (const video of args.reference_videos) {
-  if (!httpsUrl(video)) fail("--reference-video must be a public HTTPS URL");
+  if (!httpsUrl(video) && !assetUri(video)) fail("--reference-video must be a public HTTPS URL or an asset://<id> from the private asset library");
 }
 
 // Task-type constraints from the Seedance 2.5 tutorial ("Read before use").

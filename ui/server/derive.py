@@ -210,10 +210,13 @@ def parse_steps(events: List[dict], now_s: float) -> Dict[str, Any]:
                 plan_text = body or txt
                 plan_at = at
     # a step re-run without a closing line (e.g. a second quality-check round) is over once a later step has finished
-    later_done = [n for n in steps if steps[n]["status"] == "done"]
+    # likewise a step the agent never closed is over once a later step has started (seen with agent v85: only
+    # "started" lines were sent)
+    later_done = [n for n in steps if steps[n]["status"] in ("done", "running")]
     for n, st in steps.items():
         if st["status"] == "running" and any(m > n for m in later_done):
             st["status"] = "done"
+            st["inferred"] = True
     # delivery reported: steps the agent forgot to announce (no STEP line) were still part of the run
     if steps.get(11, {}).get("status") == "done":
         for n, st in steps.items():
@@ -236,6 +239,23 @@ def parse_steps(events: List[dict], now_s: float) -> Dict[str, Any]:
         current = touched[-1] if touched else None
     return {"steps": [steps[n] for n in sorted(steps)], "current_step": current, "plan_text": plan_text,
             "plan_at": plan_at, "step_events": step_events}
+
+
+def _delivered(files_dir, job: dict) -> bool:
+    """A final MP4 exists (on disk or listed in the job's file index) and the latest gate report says PASS."""
+    from pathlib import Path
+    d = Path(files_dir)
+    names = {p.name for p in d.glob("*")} if d.is_dir() else set()
+    names |= set((job.get("files_index") or {}).keys())
+    if "final.mp4" not in names and not any(n.startswith("final_v") and n.endswith(".mp4") for n in names):
+        return False
+    reports = sorted(d.glob("report_round_*.json")) if d.is_dir() else []
+    if not reports:
+        return False
+    try:
+        return str(json.loads(reports[-1].read_text()).get("verdict", "")).upper() == "PASS"
+    except Exception:
+        return False
 
 
 def _asks_user(events: List[dict]) -> bool:
@@ -700,6 +720,13 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
     inputs = job.get("inputs") or {}
     auto_approve = bool(inputs.get("auto_approve"))
     st = derive_status(events, parsed, auto_approve, bool(inputs.get("step_approve")))
+    if st["status"] == "stopped" and st.get("phase") == "idle" and not _asks_user(events) and _delivered(files_dir, job):
+        # the agent finished (final ad + a passing gate report) but did not send its closing STEP lines
+        st = dict(st, status="done", inferred_delivery=True)
+        for s in parsed["steps"]:
+            if s["status"] in ("pending", "running"):
+                s["status"] = "done"
+                s["inferred"] = True
     if job.get("example") and not events:
         # a curated example (final ad and its real inputs, no agent event log): show it as a finished job
         st = {"status": "done", "awaiting_approval": False, "awaiting_step": None, "phase": "idle"}

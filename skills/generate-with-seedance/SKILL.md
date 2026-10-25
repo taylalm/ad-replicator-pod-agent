@@ -80,3 +80,7 @@ python3 /mnt/skills/generate-with-seedance/scripts/batch.py wait --state /mnt/se
 ```bash
 node /mnt/skills/generate-with-seedance/scripts/seedance-generate.mjs --help
 ```
+
+## Private asset library ids
+
+`--reference-image` and `--reference-video` also take `asset://<Asset_Id>` from the ModelArk private asset library (assets must be Active; docs: private-virtual-avatar-library-guide-preview). In the prompt, refer to them as @Image1 / @Video1 by position, never by asset id. Tested 25 Oct 2026 with three image assets (person, product, dog) in reference mode. Our own unedited Seedance outputs and Seedream text-to-image faces are trusted inputs for 30 days without the library.

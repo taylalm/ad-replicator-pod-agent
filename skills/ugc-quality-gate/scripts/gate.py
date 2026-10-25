@@ -91,6 +91,7 @@ def sample_frames(ff, path, duration, n, tmp, label):
     frames = []
     times = [0.4] + [duration * (k + 0.5) / n for k in range(n)] + [max(0.2, duration - 0.6)]
     times = sorted(set(round(t, 2) for t in times if 0 <= t < duration))
+    times = [t for i, t in enumerate(times) if i == 0 or t - times[i - 1] >= 0.15]  # no near-duplicate frames
     for i, t in enumerate(times):
         dest = os.path.join(tmp, f"{label}_{i:02d}.jpg")
         subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.2f}", "-i", path,

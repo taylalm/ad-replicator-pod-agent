@@ -25,7 +25,7 @@ Exit 1 on FAIL: apply each issue's `fix` to the still prompt and remake the stil
 
 ## Per-clip check (run on every clip before it is accepted)
 
-`clip_check.py --payoff "<the moment the edit keeps>"` also reports `payoff_window` [start, end]; the edit plan keeps that window. The product reference image is the product truth: prompt wording that disagrees with it never fails a clip.
+Physics over time: the evaluator tracks every person, animal, vehicle and handled object frame by frame (visible, at the edge, hidden, position, height, facing, support, hands, stepping) and the script applies fixed rules: moving backwards (facing vs size trend), vanishing or appearing mid-frame, size jumps, more than two hands, floating, sliding without steps. Walkers get a second focused call on the filmstrip. Height measurements of the default checker vary between runs, so a borderline backwards walk may pass one run and fail the next. Walking people: the check lists every person or animal that moves, with which way they face and their height in each sampled frame (also shown as one filmstrip); the script computes the size trend, and someone facing the camera while shrinking (or facing away while growing) is a `physics_violation` (walking backwards). `clip_check.py --payoff "<the moment the edit keeps>"` also reports `payoff_window` [start, end]; the edit plan keeps that window. The product reference image is the product truth: prompt wording that disagrees with it never fails a clip.
 
 `scripts/clip_check.py` checks ONE clip right after it is generated, before step 7 is done: product truth, text, physics, anatomy, size and intent. One small evaluator call per clip.
 

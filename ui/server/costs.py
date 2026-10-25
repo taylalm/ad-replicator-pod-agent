@@ -120,6 +120,19 @@ def first_pass_windows(events: List[dict]) -> Dict[int, Tuple[float, float]]:
             done[n] = t
         if kind in ("done", "skipped"):
             last_done[n] = t
+    # a step that was started but never reported done ends where the next step starts, the last one at the agent's
+    # final message (agent v85 sent only "started" lines)
+    starts = sorted((t, n) for n, t in started.items())
+    last_msg = max((t for t, _, _ in order), default=None)
+    agent_ts = [_ts(e.get("processed_at")) for e in events if e.get("type") == "agent.message"]
+    last_msg = max([t for t in agent_ts if t] + ([last_msg] if last_msg else []), default=None)
+    for i, (t, n) in enumerate(starts):
+        if n not in done:
+            nxt = next((t2 for t2, n2 in starts[i + 1:] if t2 > t), None)
+            end = nxt or last_msg
+            if end and end > t:
+                done[n] = end
+                last_done[n] = end
     # rework = a human message that is not a plain approval (CHANGES:, REGENERATE:, REVISION:, ADD CLIP:, notes...)
     user_ts = sorted(t for t in (_ts(e.get("processed_at")) for e in events
                                  if e.get("type") == "user.message" and not re.match(r"\s*APPROVE\b", _text(e), re.I)

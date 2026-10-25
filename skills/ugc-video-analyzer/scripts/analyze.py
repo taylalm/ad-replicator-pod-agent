@@ -152,6 +152,30 @@ def contact_sheets(ff, path, duration, out_dir, step, per_sheet=15, cols=5):
     return sheets
 
 
+def motion_scores(ff, path, scene, fps=5, w=64, h=114):
+    """Measured movement in one scene: mean absolute change between consecutive small grey frames, in the outer ring
+    of the frame (background: camera or vehicle moving) and in the centre (subject). Numbers, not judgement: a scene can
+    look static on a contact sheet while the street behind a car window slides past."""
+    t0, dur = scene["start"] + 0.15, max(0.3, scene["duration"] - 0.3)
+    cmd = [ff, "-v", "error", "-ss", f"{t0:.2f}", "-t", f"{dur:.2f}", "-i", path, "-vf", f"fps={fps},scale={w}:{h},format=gray",
+           "-f", "rawvideo", "-"]
+    raw = subprocess.run(cmd, capture_output=True).stdout
+    n = len(raw) // (w * h)
+    if n < 2:
+        return None
+    frames = [raw[i * w * h:(i + 1) * w * h] for i in range(n)]
+    ring = [(x, y) for y in range(h) for x in range(w) if x < w * 0.2 or x >= w * 0.8 or y < h * 0.15 or y >= h * 0.85]
+    centre = [(x, y) for y in range(int(h * 0.3), int(h * 0.7)) for x in range(int(w * 0.3), int(w * 0.7))]
+    def diff(a, b, pts):
+        return sum(abs(a[y * w + x] - b[y * w + x]) for x, y in pts) / len(pts)
+    bg = sum(diff(a, b, ring) for a, b in zip(frames, frames[1:])) / (n - 1)
+    fg = sum(diff(a, b, centre) for a, b in zip(frames, frames[1:])) / (n - 1)
+    # calibrated on the balaclava sample (25 Oct 2026): driving-car selfie 26.9, walking camera 20.8, handheld
+    # selfies and close-ups 11-16, locked-off cafe shot 5.3
+    label = "static" if bg < 6 else ("handheld" if bg < 18 else "moving")
+    return {"background": round(bg, 1), "subject": round(fg, 1), "background_label": label}
+
+
 def watermark_sheet(ff, path, scenes, duration, out_dir):
     """Full-resolution, contrast-boosted corner crops: faint watermarks (AI-model marks such as
     'Veo', platform logos) are unreadable on the downscaled contact sheets."""
@@ -285,6 +309,7 @@ def main():
         scene["keyframe"] = kf if grab(ff, path, mid, kf) else None
         first = os.path.join(kf_dir, f"scene_{scene['index']:02d}_start.jpg")
         scene["first_frame"] = first if grab(ff, path, scene["start"] + 0.05, first) else None
+        scene["motion"] = motion_scores(ff, path, scene)
     step = args.sheet_step or (0.5 if duration <= 30 else 1.0)
     sheets = contact_sheets(ff, path, duration, args.out, step)
     audio = audio_stats(ff, path) if info["has_audio"] else None

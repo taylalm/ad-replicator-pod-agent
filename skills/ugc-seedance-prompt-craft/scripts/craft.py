@@ -316,6 +316,19 @@ def validate_plan(plan, analysis=None):
                     verb = re.findall(r"laugh|bark|point|film|giggl|smil|cheer|gasp|turn", str(r.get("what", "")).lower())
                     if verb and not any(v in low for v in verb):
                         warnings.append(f"{cid}: the sample's reaction ({r.get('who')}: {r.get('what')}) is missing from the prompt; reactions carry the joke")
+                if x.get("real_face_visible") is False and x.get("staging_frame") and not c.get("first_frame"):
+                    warnings.append(f"{cid}: sample scene {x.get('index')} has a staging frame without a real face ({x.get('staging_frame')}); make a first-frame still "
+                                    "with it as the Seedream composition input (pose, orientation, camera, framing) and animate that, instead of text-only reference mode")
+                if x.get("reactions") and re.search(r"walk|stroll|pass|street|park|path", str(x.get("motion", "")) + str(x.get("setting", "")), re.I):
+                    blocking = len(re.findall(r"walks? (toward|towards|away|past|beside|along|forward|behind)|facing (forward|the camera|away)|turns? (her|his|their) head", low))
+                    if blocking < len(x["reactions"]) + 1:
+                        warnings.append(f"{cid}: people walk in this scene; give every walker a direction, a facing and a timed action "
+                                        "('walks toward the camera on his right, facing forward; 2-3s glances at the mask and laughs while walking on') - "
+                                        "unspecified passers-by were generated walking backwards")
+                n_people = len(x.get("reactions") or []) + 1
+                if n_people >= 2 and not re.search(r"exactly (\w+) (people|persons|adults)|nobody (else )?(enters|leaves)|(enters|leaves) the frame at", low):
+                    warnings.append(f"{cid}: several people in the shot; fix the count ('exactly three people and one dog the whole time') and name the frame "
+                                    "edge for anyone entering or leaving - unnamed extras vanish or appear mid-frame")
                 cam = str(x.get("camera_position") or "").lower()
                 if "outside" in cam and re.search(r"\binside\b|driver'?s seat|in the car", low) and not re.search(r"outside", low):
                     warnings.append(f"{cid}: the sample camera is outside ({cam[:60]}); the prompt places it inside")
