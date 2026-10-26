@@ -82,3 +82,10 @@ python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outpu
 - Offers and discounts only when the brief provides the approved wording.
 - If rendering fails, report the error from the JSON output; do not retry with different settings without telling the user.
 - Text is rendered with the bundled Poppins font (SIL Open Font Licence, `assets/fonts/OFL.txt`).
+
+## Caption effects and position (added 26 Oct 2026)
+
+- `captions[].animation`: `{"in": "none|fade|pop|slide_up|typewriter|word_by_word|blink", "out": "cut|fade", "in_s": 0.6, "out_s": 0.15}`; `plan.caption_animation` sets the default for every caption. Copy the sample's `analysis.caption_style.animation`. Typewriter reveals letter by letter, line by line, in the final layout (nothing jumps); word_by_word word by word; blink alternates the box colour (box styles) or the text colour (outline styles) every 0.25 s (`blink_color`, `blink_s`). A caption split at the cuts animates in once and out once.
+- `captions[].x`: horizontal centre 0.15-0.85 (default 0.5), with `position` as the vertical place; used by the caption editor.
+- Insets pop in over 0.25 s (`"animate": false` to switch off), as in the client's own ads.
+- Effects are drawn as per-frame stills (no looped inputs), so a 20-30 s ad still renders in seconds.

@@ -247,6 +247,155 @@ def get_events(job_id: str, after: int = 0, replay_t: Optional[float] = None, li
             "total": len(cut), "next": after + len(chunk), "has_more": after + len(chunk) < len(cut)}
 
 
+class RenameBody(BaseModel):
+    title: str
+
+
+@app.patch("/api/jobs/{job_id}")
+def rename_job(job_id: str, body: RenameBody):
+    """Renames a job. Live jobs: job.json and the ModelArk session title (keeping its [job-...] suffix, so a fresh
+    instance rebuilds the job under the new name). Shipped read-only examples: an override in the writable data folder."""
+    d, job, _ = _load(job_id)
+    title = " ".join((body.title or "").split())
+    if not 1 <= len(title) <= 120:
+        raise HTTPException(422, "The name must be 1 to 120 characters.")
+    if job.get("demo") or job.get("example") or job.get("frozen"):
+        store.set_title_override(job_id, title)
+        return {"ok": True, "title": title}
+    job["title"] = title
+    store.write_job(d, job)
+    sid = job.get("session_id")
+    if sid:
+        try:
+            _client().post(f"/sessions/{sid}", {"title": f"{title} [{job_id}]"})
+        except Exception as e:  # the name is saved here; only the copy on ModelArk could not be updated
+            return {"ok": True, "title": title, "warning": f"Saved here, but the agent session title was not updated: {str(e)[:200]}"}
+    return {"ok": True, "title": title}
+
+
+# ----------------------------------------------------------------------------- caption editor
+import captions as CAP  # noqa: E402
+
+
+def _remote_for(job: dict):
+    index = job.get("files_index") or {}
+
+    def get(name: str) -> Optional[str]:
+        meta = index.get(name) or {}
+        return _remote_url(job.get("session_id"), meta.get("id")) if meta.get("id") else None
+    return get
+
+
+def _persist_to_session(job: dict):
+    def put(path: Path, mount: str) -> None:
+        if not job.get("session_id"):
+            return
+        client = _client()
+        up = client.upload_file(str(path))
+        client.wait_file_active(up["id"])
+        client.add_resource(job["session_id"], up["id"], mount)
+    return put
+
+
+def _editor_context(job_id: str):
+    d, job, events = _load(job_id)
+    derived = derive_job(job, events, store.files_dir(d))
+    names = {f["name"] for f in derived.get("files", [])} | set((job.get("files_index") or {}).keys())
+    final = (derived.get("finals") or [{}])[-1].get("file") if derived.get("finals") else None
+    return d, job, names, final
+
+
+class CaptionDoc(BaseModel):
+    doc: Dict[str, Any]
+
+
+class CaptionPreview(BaseModel):
+    kind: str = "caption"
+    item: Dict[str, Any]
+    size: Optional[List[int]] = None
+
+
+@app.get("/api/jobs/{job_id}/captions")
+def get_captions(job_id: str):
+    d, job, names, final = _editor_context(job_id)
+    doc = CAP.load_doc(d, names, final)
+    exp = CAP.EXPORTS.get(job_id)
+    edits = sorted((n for n in names if re.match(r"^final_edit_v\d+\.mp4$", n)), key=lambda n: int(re.findall(r"\d+", n)[0]))
+    return {"doc": doc, "base_url": f"/api/jobs/{job_id}/files/{doc['base']}" if doc.get("base") else None,
+            "edits": [{"name": n, "url": f"/api/jobs/{job_id}/files/{n}"} for n in edits], "export": exp,
+            "read_only": bool(job.get("demo") or job.get("frozen"))}
+
+
+@app.put("/api/jobs/{job_id}/captions")
+def put_captions(job_id: str, body: CaptionDoc):
+    d, job, _, _ = _editor_context(job_id)
+    if job.get("demo") or job.get("frozen"):
+        raise HTTPException(409, "This example is read-only.")
+    return {"ok": True, "doc": CAP.save_doc(d, body.doc)}
+
+
+@app.post("/api/jobs/{job_id}/captions/preview")
+def preview_caption(job_id: str, body: CaptionPreview):
+    import hashlib
+    import tempfile
+    d, job, names, final = _editor_context(job_id)
+    doc = CAP.load_doc(d, names, final)
+    if body.size:
+        doc["size"] = body.size
+    key = hashlib.sha1(json.dumps([body.kind, body.item, doc.get("size")], sort_keys=True).encode()).hexdigest()[:16]
+    out = Path(tempfile.gettempdir()) / f"capprev_{job_id}_{key}.png"
+    if not out.exists():
+        try:
+            CAP.preview_png(d, doc, body.kind, body.item, out, _remote_for(job))
+        except SystemExit as e:  # assemble.fail(): e.g. the text wraps to too many lines
+            raise HTTPException(422, "This caption does not fit: shorten it or use fewer lines.") from e
+        except FileNotFoundError:
+            raise HTTPException(404, "The inset picture is not available.")
+    box = out.with_suffix(".box").read_text() if out.with_suffix(".box").exists() else "0,0,0,0"
+    return FileResponse(str(out), media_type="image/png", headers={"Cache-Control": "max-age=3600", "X-Box": box,
+                                                                     "Access-Control-Expose-Headers": "X-Box"})
+
+
+@app.post("/api/jobs/{job_id}/captions/export")
+def export_captions(job_id: str, body: CaptionDoc):
+    d, job, _, _ = _editor_context(job_id)
+    if job.get("demo") or job.get("frozen"):
+        raise HTTPException(409, "This example is read-only.")
+    doc = CAP.save_doc(d, body.doc)
+    return CAP.start_export(job_id, d, doc, _remote_for(job), _persist_to_session(job))
+
+
+@app.get("/api/jobs/{job_id}/captions/export")
+def export_status(job_id: str):
+    return CAP.EXPORTS.get(job_id) or {"state": "idle"}
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    """Deletes a job everywhere: stops its agent session if it is working, deletes the session on ModelArk (with its
+    files), and removes the job from this site. Curated examples and demos are read-only and cannot be deleted."""
+    d, job, _ = _load(job_id)
+    if job.get("demo") or job.get("example") or job.get("frozen"):
+        raise HTTPException(409, "This example is part of the app and cannot be deleted.")
+    sid = job.get("session_id")
+    if sid:
+        client = _client()
+        try:
+            status = (client.get_session(sid) or {}).get("status")
+            if status not in ("idle", "terminated"):
+                client.interrupt(sid)  # the session must be idle before it can be deleted
+                deadline = time.time() + 60
+                while time.time() < deadline and (client.get_session(sid) or {}).get("status") not in ("idle", "terminated"):
+                    time.sleep(3)
+            client.delete(f"/sessions/{sid}")
+        except Exception as e:
+            if getattr(e, "status", None) != 404:  # already gone on ModelArk: still remove it here
+                raise HTTPException(502, f"The agent session could not be deleted: {str(e)[:300]}")
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+    return {"ok": True, "deleted": job_id}
+
+
 @app.post("/api/jobs/{job_id}/message")
 def post_message(job_id: str, body: MessageBody):
     d, job, events = _load(job_id)
@@ -354,6 +503,8 @@ def _job_parts(job_id: str) -> List[dict]:
 
     final = (derived.get("finals") or [{}])[-1].get("file") if derived.get("finals") else None
     add("final", "final.mp4" if "final.mp4" in names else final)
+    for n in sorted(x for x in names if re.match(r"^final_edit_v\d+\.mp4$", x)):  # versions exported from the caption editor
+        add("final", n)
     if "final_clean.mp4" in names:  # the delivered text-free master; older takes' clean copies are left out
         add("final", "final_clean.mp4")
     elif final and final.replace(".mp4", "_clean.mp4") in names:

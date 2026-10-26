@@ -115,6 +115,44 @@ def restore_sample(client, job: dict, dest: Path) -> Optional[str]:
         return None
 
 
+_WEB_CHECKED: set = set()
+
+
+def restore_web_files(client, job: dict, d: Path) -> List[str]:
+    """Caption edits and exports made in the web app are mounted in the job's session as web_<name>; a fresh
+    serverless instance copies them back (captions_doc.json into the job folder, exports into files/). Once per job
+    and process."""
+    if job.get("id") in _WEB_CHECKED or not job.get("session_id"):
+        return []
+    _WEB_CHECKED.add(job.get("id"))
+    got = []
+    try:
+        for r in client.get_session(job["session_id"]).get("resources") or []:
+            mount = str(r.get("mount_path") or "")
+            if r.get("type") != "file" or not mount.startswith("/mnt/session/uploads/web_"):
+                continue
+            name = Path(mount).name[len("web_"):]
+            dest = d / name if name == "captions_doc.json" else store.files_dir(d) / name
+            if dest.exists():
+                continue
+            url = (client.get(f"/files/{r['file_id']}") or {}).get("download_url")
+            if not url:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_suffix(dest.suffix + ".part")
+            with urllib.request.urlopen(url, timeout=300) as resp, open(tmp, "wb") as out:
+                while True:
+                    chunk = resp.read(1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            os.replace(tmp, dest)
+            got.append(name)
+    except Exception as e:
+        log(f"{job.get('id')}: web files restore: {type(e).__name__}: {str(e)[:120]}")
+    return got
+
+
 class JobSyncer:
     def __init__(self):
         self.threads: Dict[str, threading.Thread] = {}
@@ -224,6 +262,7 @@ class JobSyncer:
             saved = sync_files(self.client(), job["session_id"], store.files_dir(d), index)
             job["files_index"] = index
             restore_sample(self.client(), job, store.files_dir(d))
+            restore_web_files(self.client(), job, d)
             if new or saved or not (d / "costs.json").exists():
                 try:  # production time and cost of one video (official list prices), see costs.py
                     import costs
@@ -272,6 +311,9 @@ class JobSyncer:
     def _run(self, job_id: str, wake: threading.Event) -> None:
         idle_polls = 0
         while True:
+            if store.job_dir(job_id) is None:  # deleted from the site
+                log(f"{job_id}: removed, sync stopped")
+                return
             try:
                 r = self.sync_once(job_id)
                 if r["status"] == "done":
@@ -294,6 +336,14 @@ class JobSyncer:
                 else:
                     idle_polls = 0
             except Exception as e:
+                if getattr(e, "status", None) == 404 and "/sessions/" in str(getattr(e, "url", "")):
+                    # the agent session was deleted on ModelArk: drop the job from this instance and stop syncing it
+                    d = store.job_dir(job_id)
+                    if d is not None:
+                        import shutil
+                        shutil.rmtree(d, ignore_errors=True)
+                    log(f"{job_id}: session deleted on ModelArk, job removed")
+                    return
                 log(f"{job_id}: {type(e).__name__}: {str(e)[:200]}")
                 traceback.print_exc(file=sys.stderr)
             if wake.wait(POLL_S):

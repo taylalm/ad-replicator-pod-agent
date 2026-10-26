@@ -268,6 +268,11 @@ def check(path):
     for key in ("lines_max", "position", "size", "weight", "outline", "emoji"):
         if key not in cs:
             problems.append(f"caption_style missing '{key}'")
+    if data.get("on_screen_text"):
+        an = (cs.get("animation") if isinstance(cs, dict) else None) or {}
+        if not isinstance(an, dict) or an.get("in") not in ANIM_IN or an.get("out", "cut") not in ANIM_OUT:
+            problems.append(f"caption_style.animation must be {{in: one of {list(ANIM_IN)}, out: one of {list(ANIM_OUT)}, in_s, out_s}}: "
+                            "run analyze.py --caption-motion analysis.json and look at the strips")
     if isinstance(data.get("cast_count"), int) and isinstance(data.get("people"), list):
         on_camera = [p for p in data["people"] if "hands only" not in str(p.get("description", "")).lower()]
         if data["cast_count"] != len(on_camera):
@@ -280,6 +285,42 @@ def check(path):
     out({"ok": True, "scenes": len(data["scenes"]), "on_screen_text": len(data["on_screen_text"]), "cast_count": data["cast_count"]})
 
 
+ANIM_IN = ("none", "fade", "pop", "slide_up", "typewriter", "word_by_word", "blink")
+ANIM_OUT = ("cut", "fade")
+
+
+def caption_motion(analysis_path):
+    """15 fps strips of the caption area for the first 0.8 s of every on-screen caption (and its last 0.4 s), so the
+    entrance and exit effects can be seen; the 0.5 s contact sheets are too coarse for that."""
+    ff = ffmpeg_exe()
+    with open(analysis_path) as fh:
+        data = json.load(fh)
+    folder = os.path.dirname(os.path.abspath(analysis_path))
+    try:
+        with open(os.path.join(folder, "extraction.json")) as fh:
+            video = json.load(fh).get("local_path")
+    except (OSError, ValueError):
+        video = None
+    if not video or not os.path.isfile(video):
+        fail("extraction.json with local_path not found next to analysis.json: run analyze.py --source first")
+    strips = []
+    for i, t in enumerate(data.get("on_screen_text") or []):
+        try:
+            start, end = float(t.get("start", 0)), float(t.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        for tag, t0, dur in (("in", max(0.0, start - 0.1), 0.8), ("out", max(0.0, end - 0.4), 0.5)):
+            dest = os.path.join(folder, f"caption_motion_{i + 1:02d}_{tag}.jpg")
+            subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t0:.2f}", "-i", video, "-t", f"{dur:.2f}",
+                            "-vf", "fps=15,crop=iw:ih*0.55:0:0,scale=240:-2,tile=12x1,format=yuvj420p", "-frames:v", "1", dest], check=False)
+            if os.path.isfile(dest):
+                strips.append({"caption": i + 1, "text": str(t.get("text", ""))[:60], "edge": tag, "from_s": round(t0, 2), "path": dest})
+    out({"ok": True, "strips": strips,
+         "next": "Look at each strip left to right (1/15 s apart) and write caption_style.animation "
+                 f"{{in: one of {list(ANIM_IN)}, out: one of {list(ANIM_OUT)}, in_s, out_s}} (and per-caption 'animation' in on_screen_text when "
+                 "captions differ, e.g. an offer pill that blinks), then run --check again."})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", help="https:// URL of a video file, or a local video path")
@@ -289,9 +330,12 @@ def main():
     parser.add_argument("--sheet-step", type=float, default=0.0,
                         help="Seconds between contact-sheet frames (default: 0.5 s if under 30 s, else 1 s)")
     parser.add_argument("--check", metavar="ANALYSIS_JSON", help="Validate an analysis.json written by the agent")
+    parser.add_argument("--caption-motion", metavar="ANALYSIS_JSON", help="15 fps strips of each caption's entrance and exit")
     args = parser.parse_args()
     if args.check:
         check(args.check)
+    if args.caption_motion:
+        caption_motion(args.caption_motion)
     if not args.source:
         fail("--source is required")
 

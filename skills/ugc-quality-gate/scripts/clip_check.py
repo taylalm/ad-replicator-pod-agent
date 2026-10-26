@@ -60,6 +60,25 @@ def physics_from_tracks(tracks):
     def add(kind, who, t, detail, fix):
         out.append({"kind": kind, "t": t, "detail": f"{who}: {detail}", "fix": fix})
 
+    # camera compensation: a push-in, pull-out or pan changes everyone's size or position together, so each entity's
+    # change is judged against the median change of all tracked entities (with three or more of them)
+    def _series(tr):
+        out = []
+        for f in tr.get("frames") or []:
+            try:
+                if f.get("visible") is not False and float(f.get("height") or 0) > 0:
+                    out.append((float(f.get("t")), float(f.get("height")), float(f.get("x") if f.get("x") is not None else 0.5)))
+            except (TypeError, ValueError):
+                pass
+        return sorted(out)
+    ratios, shifts = [], []
+    for tr in tracks:
+        se = _series(tr)
+        if len(se) >= 2:
+            ratios.append(se[-1][1] / se[0][1])
+            shifts.append(se[-1][2] - se[0][2])
+    cam_ratio = sorted(ratios)[len(ratios) // 2] if len(ratios) >= 3 else 1.0
+    cam_shift = sorted(shifts)[len(shifts) // 2] if len(shifts) >= 3 else 0.0
     for tr in tracks:
         who, kind = str(tr.get("who", "?"))[:80], str(tr.get("kind", "")).lower()
         fr = []
@@ -71,9 +90,11 @@ def physics_from_tracks(tracks):
         fr.sort(key=lambda f: f["t"])
         vis = [f for f in fr if f.get("visible") is not False and f["height"] > 0]
         # 1. walking backwards: facing vs the size trend (also when the camera moves with the main subject)
-        if kind in ("person", "animal", "vehicle") and len(vis) >= 2:
+        # only for things that actually travel: someone bending over laughing or sitting down also shrinks
+        walking = kind == "vehicle" or any(f.get("legs_stepping") is True for f in vis) or tr.get("walking") is True
+        if kind in ("person", "animal", "vehicle") and len(vis) >= 2 and walking:
             facing = str(vis[len(vis) // 2].get("facing", "")).lower()
-            ratio = vis[-1]["height"] / vis[0]["height"]
+            ratio = vis[-1]["height"] / vis[0]["height"] / cam_ratio
             travel = "away_from_camera" if ratio < 0.8 else ("toward_camera" if ratio > 1.25 else None)
             if travel and opposite.get(facing) == travel:
                 add("physics_violation", who, f"{vis[0]['t']:.1f}-{vis[-1]['t']:.1f}", f"faces {facing} but travels {travel} (moving backwards)",
@@ -107,21 +128,67 @@ def physics_from_tracks(tracks):
             add("physics_violation", who, f"{air[0]['t']:.1f}-{air[-1]['t']:.1f}", "floats with nothing supporting it",
                 "say what holds or carries it (held in his right hand, lying on the bed, feet on the path)")
         # 6. sliding: travels across the frame while the legs never step
-        if kind in ("person", "animal") and len(vis) >= 3 and all(f.get("legs_stepping") is False for f in vis) \
+        # only a clear sideways glide counts (size changes are too noisy to call sliding: people lean, bend and wave)
+        if kind in ("person", "animal") and len(vis) >= 4 and all(f.get("legs_stepping") is False for f in vis) \
                 and all(str(f.get("support", "ground")).lower() == "ground" for f in vis):
-            moved = abs(vis[-1]["x"] - vis[0]["x"]) > 0.2 or not (0.8 <= vis[-1]["height"] / vis[0]["height"] <= 1.25)
-            if moved:
+            if abs((vis[-1]["x"] - vis[0]["x"]) - cam_shift) > 0.25:
                 add("physics_violation", who, f"{vis[0]['t']:.1f}-{vis[-1]['t']:.1f}", "moves across the ground without stepping (sliding)",
                     "describe the walk: 'walks with natural steps'; or keep the person standing still")
     return out
+
+
+FIELDS = ["t", "visible", "at_edge", "occluded", "x", "height", "facing", "support", "hands", "legs_stepping"]
+
+
+def _tracks(base, key, model, strip):
+    """Per-frame tracking of every person, animal, vehicle and handled object, in a compact row format so a crowded
+    shot stays short enough to come back as valid JSON. Returns None when the reply cannot be read (twice)."""
+    msg = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": gate.data_url(strip, 1600)}},
+        {"type": "text", "text": "Frames of one video clip, left = earliest, times on top. Track every person, animal, vehicle and handled object "
+                                 "(the product, a leash, a cup), ONE entry per individual. For each frame give one row: [t, visible (1/0), at_edge "
+                                 "(1 when cut by the frame edge or entering/leaving), occluded (1 when hidden behind something), x (horizontal centre "
+                                 "0-1), height (fraction of the frame height, measured carefully), facing (C = toward camera, A = away, L, R), "
+                                 "support (G ground, S seat, H held, W worn, O on a surface, F floating in the air), hands (people: own visible "
+                                 "hands, else 0), stepping (1 when the legs are in a walking step)]. Reply with ONLY JSON: {\"tracks\": [{\"who\": "
+                                 "\"short description\", \"kind\": \"person|animal|vehicle|object\", \"f\": [[0.4,1,0,0,0.5,0.8,\"C\",\"G\",2,1], ...]}]}"}]}]
+    facing = {"C": "toward_camera", "A": "away_from_camera", "L": "left", "R": "right"}
+    support = {"G": "ground", "S": "seat", "H": "held", "W": "worn", "O": "on_surface", "F": "air"}
+    for _ in range(2):
+        try:
+            resp = gate.call_model(base, key, model, msg, max_tokens=4000)
+        except SystemExit:
+            return None
+        txt = resp["choices"][0]["message"]["content"]
+        if isinstance(txt, list):
+            txt = "".join(c.get("text", "") for c in txt)
+        data = gate.parse_json(txt)
+        if not data or not isinstance(data.get("tracks"), list):
+            continue
+        out = []
+        for tr in data["tracks"]:
+            rows = []
+            for r in tr.get("f") or []:
+                if isinstance(r, list) and len(r) >= 6:
+                    d = dict(zip(FIELDS, r))
+                    d["visible"], d["at_edge"], d["occluded"] = bool(d.get("visible")), bool(d.get("at_edge")), bool(d.get("occluded"))
+                    d["facing"] = facing.get(str(d.get("facing", "")).upper()[:1], d.get("facing"))
+                    d["support"] = support.get(str(d.get("support", "")).upper()[:1], d.get("support"))
+                    if "legs_stepping" in d:
+                        d["legs_stepping"] = bool(d["legs_stepping"])
+                    rows.append(d)
+            out.append({"who": tr.get("who"), "kind": tr.get("kind"), "frames": rows})
+        return out
+    return None
 
 
 def _walkers(base, key, model, strip):
     """One focused call on the filmstrip: every individual who walks or moves, facing and height per frame."""
     msg = [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": gate.data_url(strip, 1600)}},
-        {"type": "text", "text": "Frames of one video clip, left = earliest, times on top. List EVERY individual person or animal who walks or moves "
-                                 "(main subject and background people; one entry per individual, never group people). For each: which way the body "
+        {"type": "text", "text": "Frames of one video clip, left = earliest, times on top. List EVERY individual person or animal who WALKS (takes "
+                                 "steps across the ground; not people who stand, sit, lean, bend or only move their arms) - main subject and background "
+                                 "people, one entry per individual, never group people. For each: which way the body "
                                  "faces (toward_camera, away_from_camera, left, right) and the HEIGHT in each frame they are in (head to feet, or head "
                                  "to the frame's bottom edge, as a fraction of the frame height; measure each frame separately and carefully). "
                                  "Reply with ONLY JSON: {\"walkers\": [{\"who\": \"where and what they wear\", \"facing\": \"...\", "
@@ -232,15 +299,8 @@ def main():
                     "who wears it (a person's name, 'unknown person', or 'nobody'), its 3D state ('worn' on a body part; 'flat' = empty and collapsed, "
                     "lying on a surface with no volume; 'filled' = empty but keeping the volume or shape of a body part, e.g. a sock with a rounded heel, "
                     "toes pointing up, a hollow leg or an open cuff standing up - 'filled' applies to WEARABLES only; 'standing' = a non-wearable that keeps its own shape on a surface, e.g. a tote bag, mug, box or ornament, which is normal; 'held'; 'folded'), whether the item is a wearable (sock, shoe, glove, hat, garment), and for a worn item how many items are on that same single body part (one foot, one hand), counting itself: 1 is normal, 2 means two socks on one foot."
-                    "\nThen TRACK every person, animal, vehicle and handled object (the product, a leash, a cup) through the frames, ONE entry per individual (never group two people). For each one and each frame "
-                    "give: visible (true/false), at_edge (true when it is cut by the frame edge or just entering/leaving), occluded (hidden behind something), "
-                    "x (horizontal centre, 0-1), height (head to feet or top to bottom as a fraction of the frame height; measure carefully), facing "
-                    "(toward_camera, away_from_camera, left, right), support (ground, seat, held_by:<who>, worn_by:<who>, on:<surface>, air), hands (people: "
-                    "visible hands that belong to this person) and legs_stepping (people/animals: true when the legs are in a walking step)."
                     "\nReply with ONLY JSON: {\"observations\": [{\"t\": seconds, \"item\": \"...\", \"worn_by\": \"...\", \"wearable\": true, \"state\": \"worn|flat|filled|standing|held|folded\", "
-                    "\"items_on_that_body_part\": n}], \"tracks\": [{\"who\": \"what it is, where it is and what it wears\", \"kind\": \"person|animal|vehicle|object\", "
-                    "\"frames\": [{\"t\": seconds, \"visible\": true, \"at_edge\": false, \"occluded\": false, \"x\": 0.5, \"height\": 0.8, \"facing\": \"toward_camera\", "
-                    "\"support\": \"ground\", \"hands\": 2, \"legs_stepping\": true}]}], \"verdict\": \"PASS\"|\"FAIL\", \"product_match\": 1-5, "
+                    "\"items_on_that_body_part\": n}], \"verdict\": \"PASS\"|\"FAIL\", \"product_match\": 1-5, "
                     "\"physics\": 1-5, " + ("\"payoff_window\": [first second the payoff is visible, last second] or null if it never happens, " if a.payoff else "") + "\"issues\": [{\"kind\": one of " + json.dumps(HARD + ["minor"]) + ", \"t\": seconds, \"detail\": \"...\", "
                     "\"fix\": \"how to change the prompt or references\"}], \"summary\": \"one sentence\"}"})
     messages = [{"role": "system", "content": "You are a strict quality checker for AI-generated product video clips of a personalized-gifts brand. "
@@ -255,7 +315,7 @@ def main():
     base = os.environ.get("ARK_BASE_URL", gate.DEFAULT_BASE)
     res, raw = None, ""
     for _ in range(2):  # an unreadable reply is asked once more before it counts as a failure
-        resp = gate.call_model(base, key, a.model, messages, max_tokens=7000)
+        resp = gate.call_model(base, key, a.model, messages, max_tokens=4000)
         txt = resp["choices"][0]["message"]["content"]
         if isinstance(txt, list):
             txt = "".join(c.get("text", "") for c in txt)
@@ -281,14 +341,18 @@ def main():
         if isinstance(n_on, (int, float)) and n_on > 1:
             issues.append({"kind": "physics_violation", "t": ob.get("t"), "detail": f"{int(n_on)} items on one body part ({ob.get('item')}, worn by {ob.get('worn_by')})",
                            "fix": "one item per body part: say who wears which item and that each foot wears exactly one sock"})
-    issues += physics_from_tracks(res.get("tracks") or [])
+    tracks = _tracks(base, key, a.model, strip) if strip else None
+    if tracks is None and strip:
+        issues.append({"kind": "minor", "t": None, "detail": "physics tracking unavailable (checker reply unreadable); judge movement on the frames",
+                       "fix": "none needed for the clip"})
+    issues += physics_from_tracks(tracks or [])
     # walking gets its own focused question: in the all-entity tracking the evaluator grouped two passers-by and
     # smoothed their sizes, while a walkers-only question measured the woman walking backwards correctly
-    people = [t for t in res.get("tracks") or [] if str(t.get("kind", "")).lower() in ("person", "animal")]
+    people = [t for t in tracks or [] if str(t.get("kind", "")).lower() in ("person", "animal")]
     walkers = None
     if strip and (len(people) >= 2 or re.search(r"\bwalk|stroll|pass|street|park|path|run", intent, re.I)):
         walkers = _walkers(base, key, a.model, strip)
-        issues += physics_from_tracks([{"who": w.get("who"), "kind": "person",
+        issues += physics_from_tracks([{"who": w.get("who"), "kind": "person", "walking": True,
                                         "frames": [{"t": h[0], "height": h[1], "facing": w.get("facing"), "x": 0.5} for h in (w.get("heights") or [])
                                                    if isinstance(h, (list, tuple)) and len(h) == 2]} for w in walkers or []])
     seen, uniq = set(), []
@@ -330,7 +394,7 @@ def main():
     hard = [i for i in issues if i.get("kind") in HARD]
     only_disputed = disputed and not issues
     verdict = "FAIL" if hard or (str(res.get("verdict", "")).upper() != "PASS" and not only_disputed) else "PASS"
-    report = {"clip": a.clip, "verdict": verdict, "observations": res.get("observations"), "product_match": res.get("product_match"), "physics": res.get("physics"), "tracks": res.get("tracks"), "walkers": walkers,
+    report = {"clip": a.clip, "verdict": verdict, "observations": res.get("observations"), "product_match": res.get("product_match"), "physics": res.get("physics"), "tracks": tracks, "walkers": walkers,
               "payoff_window": payoff_window, "hard_failures": hard, "issues": issues, "disputed": disputed, "summary": res.get("summary"), "frames": [t for t, _ in frames], "sheet": sheet,
               "model": a.model, "usage": resp.get("usage"), **({"raw_reply": raw[:4000]} if unreadable else {})}
     jpath = os.path.join(a.out, f"check_{tag}.json")

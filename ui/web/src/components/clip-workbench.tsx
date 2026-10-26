@@ -1,6 +1,7 @@
 "use client";
 
-import { Check, ChevronDown, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-react";
+import { AtSign, Check, ChevronDown, Download, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-react";
+import { DownloadButton } from "@/components/download-button";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,9 +14,9 @@ type Upload = { key: string; name: string; preview: string | null; role: string;
 
 const ROLES = ["product truth", "person look", "scene staging", "style", "first frame"] as const;
 
-function RefThumb({ r, on, onToggle }: { r: ClipRef; on: boolean; onToggle?: () => void }) {
+function RefThumb({ r, on, onToggle, tag, onInsert }: { r: ClipRef; on: boolean; onToggle?: () => void; tag?: string; onInsert?: (tag: string) => void }) {
   const s = t();
-  const label = r.kind === "first_frame" ? s.clips.firstFrame : r.kind ? r.kind.replace(/_/g, " ") : s.clips.reference;
+  const label = tag ?? (r.kind === "first_frame" ? s.clips.firstFrame : r.kind ? r.kind.replace(/_/g, " ") : s.clips.reference);
   return (
     <figure className={cn("min-w-0 transition-opacity", !on && "opacity-40")}>
       <div className="relative aspect-square overflow-hidden rounded-lg bg-surface ring-1 ring-foreground/8">
@@ -34,7 +35,20 @@ function RefThumb({ r, on, onToggle }: { r: ClipRef; on: boolean; onToggle?: () 
           </button>
         )}
       </div>
-      <figcaption className="mt-1 truncate text-[11px] leading-tight"><span className="font-semibold">{label}</span> <span className="text-muted-foreground">{r.file ?? r.id}</span></figcaption>
+      <figcaption className="mt-1 flex min-w-0 items-center gap-1 text-[11px] leading-tight">
+        {tag && onInsert ? (
+          <button type="button" onClick={() => onInsert(tag)} title={s.clips.insertTag(tag)}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-brand-soft px-1 font-semibold text-foreground hover:bg-brand/20">
+            <AtSign className="size-3" aria-hidden />{tag.replace(/^@/, "")}
+          </button>
+        ) : <span className="shrink-0 font-semibold">{label}</span>}
+        <span className="truncate text-muted-foreground">{r.file ?? r.id}</span>
+        {r.url ? (
+          <a href={fileUrl(r.url)} download={r.file ?? undefined} aria-label={`${s.common.download} ${r.file ?? r.id}`} className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
+            <Download className="size-3" aria-hidden />
+          </a>
+        ) : null}
+      </figcaption>
     </figure>
   );
 }
@@ -109,6 +123,18 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
   const [open, setOpen] = useState(index === 0);
   const pending = uploads.some((u) => u.busy);
   const toggle = (r: ClipRef) => setDropped((d) => ({ ...d, [r.file ?? r.id]: !d[r.file ?? r.id] }));
+  // Seedance numbers image references in order (@Image1, @Image2...); the first frame is a separate input
+  const firstFrame = refs.filter((r) => r.kind === "first_frame");
+  const imageRefs = refs.filter((r) => r.kind !== "first_frame" && r.kind !== "mentioned");
+  const mentioned = refs.filter((r) => r.kind === "mentioned");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const insertTag = (tag: string) => {
+    const el = promptRef.current;
+    const at = el ? el.selectionStart : prompt.length;
+    const next = `${prompt.slice(0, at)}${tag}${prompt.slice(at)}`;
+    setPrompt(next);
+    requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(at + tag.length, at + tag.length); } });
+  };
 
   const regenerate = async () => {
     const lines = [`REGENERATE: clip ${clip.id} | PROMPT: ${prompt.trim()}`];
@@ -138,11 +164,17 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
         <div className="space-y-2">
           <video src={fileUrl(clip.url)} controls playsInline preload="metadata" className="aspect-9-16 w-full rounded-xl bg-black object-contain" aria-label={clip.id} />
           <p className="truncate text-[11px] text-muted-foreground">{s.clips.current}: {clip.file}</p>
+          <DownloadButton url={clip.url} name={clip.file} label={s.clips.downloadTake} />
           {clip.takes?.length ? (
             <details className="text-xs">
               <summary className="cursor-pointer text-muted-foreground hover:text-foreground">{s.clips.earlierTakes(clip.takes.length)}</summary>
-              <ul className="mt-1 space-y-0.5">
-                {[...clip.takes].reverse().map((tk) => <li key={tk.file}><a className="text-brand hover:underline" href={fileUrl(tk.url)} target="_blank" rel="noopener">{tk.file}</a></li>)}
+              <ul className="mt-1 space-y-1">
+                {[...clip.takes].reverse().map((tk) => (
+                  <li key={tk.file} className="flex min-w-0 items-center gap-1.5">
+                    <a className="truncate text-brand hover:underline" href={fileUrl(tk.url)} target="_blank" rel="noopener">{tk.file}</a>
+                    <a href={fileUrl(tk.url)} download={tk.file} aria-label={`${s.common.download} ${tk.file}`} className="shrink-0 text-muted-foreground hover:text-foreground"><Download className="size-3" aria-hidden /></a>
+                  </li>
+                ))}
               </ul>
             </details>
           ) : null}
@@ -151,7 +183,11 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
           <section>
             <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{s.clips.inputs}</h4>
             {refs.length ? (
-              <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">{refs.map((r) => <RefThumb key={`${r.id}-${r.file}`} r={r} on={!dropped[r.file ?? r.id]} onToggle={() => toggle(r)} />)}</div>
+              <div className="grid grid-cols-4 gap-2 sm:grid-cols-5">
+                {firstFrame.map((r) => <RefThumb key={`ff-${r.id}-${r.file}`} r={r} on={!dropped[r.file ?? r.id]} onToggle={() => toggle(r)} />)}
+                {imageRefs.map((r, i) => <RefThumb key={`${r.id}-${r.file}`} r={r} tag={`@Image${i + 1}`} onInsert={insertTag} on={!dropped[r.file ?? r.id]} onToggle={() => toggle(r)} />)}
+                {mentioned.map((r) => <RefThumb key={`m-${r.id}-${r.file}`} r={r} on={!dropped[r.file ?? r.id]} onToggle={() => toggle(r)} />)}
+              </div>
             ) : <p className="text-xs text-muted-foreground">{s.clips.noRefs}</p>}
             {stillRefs.length ? (
               <>
@@ -168,7 +204,7 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
           ) : null}
           <section>
             <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{s.clips.prompt}{clip.prompt_file ? <span className="font-normal normal-case"> · {clip.prompt_file}</span> : null}</h4>
-            <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={7} className="rounded-xl font-mono text-xs leading-relaxed" aria-label={s.clips.prompt} placeholder={s.clips.noPrompt} />
+            <Textarea ref={promptRef} value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={7} className="rounded-xl font-mono text-xs leading-relaxed" aria-label={s.clips.prompt} placeholder={s.clips.noPrompt} />
           </section>
           <section>
             <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{s.clips.addRefs}</h4>

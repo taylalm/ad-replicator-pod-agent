@@ -82,6 +82,18 @@ def parse_commands(path):
     return clips
 
 
+def command_inputs(parts):
+    """What the clip is generated from, kept in the state file so the web app can show and reuse it later
+    (commands.sh is re-rendered for every retry): first frame, @Image references in order, videos, model, prompt."""
+    def vals(flag):
+        return [parts[i + 1] for i, a in enumerate(parts[:-1]) if a == flag]
+    prompt = (vals("--prompt") or [""])[0]
+    return {"first_frame": (vals("--first-frame") or [None])[0], "images": vals("--reference-image") + vals("--image"),
+            "videos": vals("--reference-video"), "version": (vals("--version") or [None])[0], "model": (vals("--model") or [None])[0],
+            "duration": (vals("--duration") or [None])[0], "resolution": (vals("--resolution") or [None])[0],
+            "audio": "--generate-audio" in parts, "prompt": prompt[:8000]}
+
+
 def submit(args):
     if not os.environ.get("ARK_API_KEY"):
         out({"ok": False, "error": "ARK_API_KEY is not available in the sandbox environment"}, 2)
@@ -105,7 +117,7 @@ def submit(args):
             data = json.loads(proc.stdout[proc.stdout.find("{"):]) if "{" in proc.stdout else {}
         except (subprocess.TimeoutExpired, ValueError) as error:
             proc, data = None, {"error": str(error)[:200]}
-        entry = {"download": download, "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        entry = {"download": download, "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "inputs": command_inputs(parts)}
         if data.get("task_id"):
             entry.update(task_id=data["task_id"], status="submitted")
         else:

@@ -4,11 +4,14 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { ArrowRight, Clapperboard, PlayCircle } from "lucide-react";
 import { StatusBadge } from "@/components/status-badge";
+import { DeleteJob, EditableTitle } from "@/components/job-actions";
 import { fileUrl, type JobRow } from "@/lib/api";
 import { fmtDate, fmtDuration, hostOf } from "@/lib/format";
 import { t } from "@/i18n";
 
-export function JobCard({ job, index = 0 }: { job: JobRow; index?: number }) {
+export function JobCard({ job, index = 0, onDeleted, onRenamed }: {
+  job: JobRow; index?: number; onDeleted?: (id: string) => void; onRenamed?: (id: string, title: string) => void;
+}) {
   const s = t();
   const replayable = job.demo || job.status === "done";
   return (
@@ -31,8 +34,9 @@ export function JobCard({ job, index = 0 }: { job: JobRow; index?: number }) {
           <StatusBadge status={job.status} demo={job.demo} />
           {job.verdict && <span className="text-xs font-semibold text-muted-foreground">Quality: {job.verdict}</span>}
         </div>
-        <h3 className="mt-2 font-display text-lg font-medium leading-tight">
+        <h3 className="mt-2 flex flex-wrap items-center gap-1.5 font-display text-lg font-medium leading-tight">
           <Link href={`/job?id=${job.id}`} className="outline-none after:absolute after:inset-0 after:rounded-2xl focus-visible:underline">{job.title}</Link>
+          {onRenamed && !job.demo && <EditableRename job={job} onRenamed={onRenamed} />}
         </h3>
         <p className="mt-1 text-sm text-muted-foreground">
           {fmtDate(job.created_at)}{job.product_url ? ` · ${hostOf(job.product_url)}` : ""}{job.production_s ? ` · ${s.history.production(fmtDuration(job.production_s))}` : ""}{job.cost_per_video_usd != null ? ` · ${s.history.costPerVideo(`$${job.cost_per_video_usd.toFixed(2)}`)}` : ""}
@@ -48,8 +52,14 @@ export function JobCard({ job, index = 0 }: { job: JobRow; index?: number }) {
           <Link href={`/job?id=${job.id}`} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-brand outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
             {s.history.open}<ArrowRight className="size-3.5" aria-hidden />
           </Link>
+          {onDeleted && !job.read_only && !job.demo && <span className="ml-auto"><DeleteJob id={job.id} compact onDeleted={() => onDeleted(job.id)} /></span>}
         </div>
       </div>
     </motion.li>
   );
+}
+
+/** Pencil-only rename on a card: the editor replaces the link title while open. */
+function EditableRename({ job, onRenamed }: { job: JobRow; onRenamed: (id: string, title: string) => void }) {
+  return <span className="relative z-10 [&>span>span:first-child]:sr-only"><EditableTitle id={job.id} title={job.title} onRenamed={t => onRenamed(job.id, t)} /></span>;
 }

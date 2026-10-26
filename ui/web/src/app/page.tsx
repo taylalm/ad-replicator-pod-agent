@@ -104,7 +104,9 @@ export default function HistoryPage() {
         </div>
       ) : (
         <ul className="grid gap-4 md:grid-cols-2">
-          {visible.map((j, i) => <JobCard key={j.id} job={j} index={i} />)}
+          {visible.map((j, i) => <JobCard key={j.id} job={j} index={i}
+            onDeleted={id => setJobs(prev => (prev || []).filter(x => x.id !== id))}
+            onRenamed={(id, title) => setJobs(prev => (prev || []).map(x => x.id === id ? { ...x, title } : x))} />)}
         </ul>
       )}
     </div>

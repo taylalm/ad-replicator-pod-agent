@@ -86,7 +86,7 @@ def caption_spec(cap, size):
     if preset is None:
         fail(f"captions style must be one of {sorted(PRESETS)}")
     spec = dict(preset)
-    spec.update({k: v for k, v in cap.items() if k in ("weight", "color", "stroke_color", "box_color", "position", "max_lines")})
+    spec.update({k: v for k, v in cap.items() if k in ("weight", "color", "stroke_color", "box_color", "position", "max_lines", "x")})
     spec["font_size"] = int(cap["size"]) if cap.get("size") else max(int(width * preset["size"]), int(width * 0.044))
     pos = spec["position"]
     spec["y"] = POSITIONS[pos] if pos in POSITIONS else float(pos)
@@ -172,6 +172,11 @@ def validate(plan, dry_run):
             fail(f"captions[{i}].position must be top, upper, middle, lower, bottom or a number between 0.04 and 0.80")
         if spec["y"] > 0.30 and not cap.get("allow_over_subject"):
             warnings.append(f"captions[{i}] sits at {spec['y']:.2f} of the frame height; the client keeps captions in the top band above faces (set allow_over_subject: true to override)")
+        anim = cap.get("animation") or plan.get("caption_animation") or {}
+        if anim and (anim.get("in", "none") not in ANIMATIONS_IN or anim.get("out", "cut") not in ANIMATIONS_OUT):
+            fail(f"captions[{i}].animation: in must be one of {list(ANIMATIONS_IN)}, out one of {list(ANIMATIONS_OUT)}")
+        if cap.get("x") is not None and not 0.15 <= float(cap["x"]) <= 0.85:
+            fail(f"captions[{i}].x must be between 0.15 and 0.85 (horizontal centre of the caption)")
         if len(str(cap["text"])) > 110:
             fail(f"captions[{i}] is {len(cap['text'])} characters; keep captions to 1-2 short lines (about 70 characters)")
         try:  # same wrap as the renderer, so --dry-run catches 3-line captions
@@ -288,9 +293,16 @@ def split_runs(line):
     return runs
 
 
-def render_caption_layer(path, size, text, spec, margin=0.08):
+def caption_units(text):
+    """Number of reveal steps of a caption: letters (spaces included) with every emoji cluster counted as one."""
+    return sum(len(EMOJI_RE.findall(r)) if e else len(r) for e, r in split_runs(str(text).replace("\n", " ")))
+
+
+def render_caption_layer(path, size, text, spec, margin=0.08, reveal=None):
     """Render one caption with its resolved preset. Emoji are drawn with Noto Color Emoji when the font is
-    installed (ensure-deps.sh), otherwise dropped. Returns the number of lines drawn."""
+    installed (ensure-deps.sh), otherwise dropped. Returns the number of lines drawn.
+    spec["x"] (0-1, default 0.5) is the horizontal centre. reveal=n draws only the first n letters/emoji in the
+    final line layout (typewriter and word-by-word steps keep every letter where the full caption puts it)."""
     from PIL import Image, ImageDraw, ImageFont
     width, height = size
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -319,26 +331,39 @@ def render_caption_layer(path, size, text, spec, margin=0.08):
         fail(f"Caption wraps to {len(lines)} lines (max {spec.get('max_lines', 2)}): shorten it: {text!r}")
     line_h = int(spec["font_size"] * 1.22)
     y = int(spec["y"] * height - line_h * len(lines) / 2)
+    centre = float(spec.get("x", 0.5)) * width
+
+    def left(w):  # keep the block inside the frame when it is dragged sideways
+        return min(max(centre - w / 2, margin * width / 2), width - margin * width / 2 - w)
     if spec["render_style"] == "box":
         pad = spec["font_size"] // 2
         block_w = max(measure(line) for line in lines)
-        bx = (width - block_w) / 2
+        bx = left(block_w)
         draw.rounded_rectangle([bx - pad, y - pad // 2, bx + block_w + pad, y + line_h * len(lines) + pad // 3],
                                radius=pad, fill=hex_rgba(spec.get("box_color", "#000000B3")))
+    budget = reveal if reveal is not None else 10 ** 9
     for line in lines:
-        x = (width - measure(line)) / 2
+        x = left(measure(line))
         for is_e, run in split_runs(line):
+            if budget <= 0:
+                break
             if not is_e:
-                draw.text((x, y), run, font=font, fill=hex_rgba(spec["color"]),
+                part = run[:budget]
+                budget -= len(part)
+                draw.text((x, y), part, font=font, fill=hex_rgba(spec["color"]),
                           stroke_width=stroke, stroke_fill=hex_rgba(spec.get("stroke_color", "#000000")))
                 x += draw.textlength(run, font=font)
             else:
                 for ch in EMOJI_RE.findall(run):
+                    if budget <= 0:
+                        break
+                    budget -= 1
                     g = Image.new("RGBA", (136, 128), (0, 0, 0, 0))
                     ImageDraw.Draw(g).text((0, 0), ch, font=efont, embedded_color=True)
                     g = g.crop(g.getbbox() or (0, 0, 1, 1)).resize((glyph, glyph))
                     layer.alpha_composite(g, (int(x), int(y + (line_h - glyph) / 2)))
                     x += glyph
+        budget -= 1  # the line break counts as the space it replaced
         y += line_h
     layer.save(path)
     return len(lines)
@@ -351,6 +376,109 @@ def caption_box(size, text, spec, margin=0.08):
     line_h = int(spec["font_size"] * 1.22)
     y0 = spec["y"] * height - line_h * n / 2
     return (margin, max(0.0, y0 / height), 1 - margin, min(1.0, (y0 + line_h * n) / height))
+
+
+ANIMATIONS_IN = ("none", "fade", "pop", "slide_up", "typewriter", "word_by_word", "blink")
+ANIMATIONS_OUT = ("cut", "fade")
+# seen in the samples and the client's own ads (25 Oct 2026): captions cut in with the shot, type on letter by
+# letter (offer lines, the blanket sample), and offer pills blink between two box colours
+ANIMATION_DEFAULT_S = {"fade": 0.25, "pop": 0.3, "slide_up": 0.3, "typewriter": 0.6, "word_by_word": 0.8}
+
+
+def motion_frames(tmp, key, full_png, kind, start, dur, fps, centre, direction="in"):
+    """An entrance (or exit) as one still per frame, drawn with Pillow: fade (opacity), pop (85% -> ~103% -> 100%
+    around the caption's own centre, with the fade) and slide_up (from 3.5% lower, with the fade). Plain stills keep
+    the ffmpeg graph simple (looped image inputs deadlocked next to the outro). Returns [(png, t0, t1, None)]."""
+    import math
+    from PIL import Image
+    base = Image.open(full_png).convert("RGBA")
+    width, height = base.size
+    n = max(2, int(round(dur * fps)))
+    out = []
+    for i in range(n):
+        p = (i + 1) / n if direction == "in" else 1 - (i + 1) / n
+        frame = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        img = base
+        if kind == "pop":
+            k = 0.85 + 0.15 * p + 0.08 * math.sin(math.pi * p)
+            img = base.resize((max(1, int(width * k)), max(1, int(height * k))), Image.LANCZOS)
+            frame.alpha_composite(img, (int(centre[0] - centre[0] * k), int(centre[1] - centre[1] * k)))
+        elif kind == "slide_up":
+            frame.alpha_composite(base, (0, int(height * 0.035 * (1 - p))))
+        else:
+            frame = base.copy()
+        alpha = frame.getchannel("A").point(lambda a: int(a * min(1.0, p * 1.4 if kind != "fade" else p)))
+        frame.putalpha(alpha)
+        path = os.path.join(tmp, f"{key}_{direction}{i:02d}.png")
+        frame.save(path)
+        out.append((path, start + i / fps, start + (i + 1) / fps, None))
+    return out
+
+
+def caption_layers(tmp, key, size, text, spec, start, end, anim=None, fps=30):
+    """The overlay layers of one caption: [(png, start, end, fx)] where fx (or None) is an ffmpeg effect on that
+    layer: {"fade_in": d, "fade_out": d, "pop": d, "slide_up": d, "centre": (cx, cy)}. Typewriter and word-by-word
+    become reveal steps, blink two alternating colour versions."""
+    anim = anim or {}
+    kind_in = anim.get("in", "none")
+    kind_out = anim.get("out", "cut")
+    d_in = float(anim.get("in_s") or ANIMATION_DEFAULT_S.get(kind_in, 0.0))
+    d_out = float(anim.get("out_s") or (0.15 if kind_out == "fade" else 0.0))
+    d_in = min(d_in, max(0.0, (end - start) * 0.6))
+    full = os.path.join(tmp, f"{key}.png")
+    n = render_caption_layer(full, size, text, spec)
+    layers = []
+    if kind_in in ("typewriter", "word_by_word") and d_in > 0:
+        units = caption_units(text)
+        if kind_in == "word_by_word":
+            stops, count = [], 0
+            for word in str(text).replace("\n", " ").split(" "):
+                count += caption_units(word) + 1
+                stops.append(min(units, count - 1))
+        else:
+            k = max(1, min(units, int(d_in * fps)))  # one step per frame at most
+            stops = [round(units * (i + 1) / k) for i in range(k)]
+        stops = [x for i, x in enumerate(stops) if x > 0 and (i == 0 or x != stops[i - 1])]
+        step = d_in / max(1, len(stops))
+        for i, upto in enumerate(stops[:-1]):
+            png = os.path.join(tmp, f"{key}_r{i:03d}.png")
+            render_caption_layer(png, size, text, spec, reveal=upto)
+            layers.append((png, start + i * step, start + (i + 1) * step, None))
+        hold_from = start + (len(stops) - 1) * step
+        if d_out:
+            layers.append((full, hold_from, end - d_out, None))
+            layers += motion_frames(tmp, key, full, "fade", end - d_out, d_out, fps, None, "out")
+        else:
+            layers.append((full, hold_from, end, None))
+    elif kind_in == "blink":
+        alt = dict(spec)
+        if spec.get("render_style") == "box":
+            alt["box_color"] = anim.get("blink_color") or "#2EC4B6F2"
+        else:
+            alt["color"] = anim.get("blink_color") or "#FFE94A"
+        alt_png = os.path.join(tmp, f"{key}_b.png")
+        render_caption_layer(alt_png, size, text, alt)
+        period = float(anim.get("blink_s") or 0.25)
+        t, i = start, 0
+        while t < end - 1e-3:
+            layers.append((full if i % 2 == 0 else alt_png, t, min(end, t + period), None))
+            t += period
+            i += 1
+    else:
+        from PIL import Image
+        with Image.open(full) as im:
+            bb = im.getbbox() or (0, 0, size[0], size[1])
+        centre = ((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+        t0, t1 = start, end
+        if kind_in in ("fade", "pop", "slide_up") and d_in > 0:
+            layers += motion_frames(tmp, key, full, kind_in, start, d_in, fps, centre, "in")
+            t0 = start + max(2, int(round(d_in * fps))) / fps
+        if d_out:
+            t1 = end - d_out
+        layers.append((full, t0, t1, None))
+        if d_out:
+            layers += motion_frames(tmp, key, full, "fade", t1, d_out, fps, centre, "out")
+    return layers, n
 
 
 def boxes_overlap(a, b, pad=0.02):
@@ -485,6 +613,8 @@ def render_inset_layer(path, size, ins):
     margin = int(width * 0.04)
     top = int(height * float(ins.get("top", 0.24)))
     x = width - img.width - margin if "right" in pos else margin
+    if ins.get("left") is not None:  # dragged in the caption editor: left edge as a fraction of the width
+        x = min(max(0, int(width * float(ins["left"]))), width - img.width - border * 2)
     y = top
     frame = Image.new("RGBA", (img.width + 2 * border, img.height + 2 * border), (255, 255, 255, 255))
     layer.alpha_composite(frame, (x - border, y - border))
@@ -531,6 +661,7 @@ def render_inset_layer(path, size, ins):
         draw.line(pts, fill=(255, 255, 255, 255), width=lw, joint="curve")
         draw.polygon(tri, fill=(255, 255, 255, 255))
     layer.save(path)
+    return (x - border, y - border, x + img.width + border, y + img.height + border)  # the framed photo, in pixels
 
 
 def render_end_card(path, size, card):
@@ -760,10 +891,16 @@ def main():
                     pieces = [(c0, c1, placed)]
                     if new_y is not None:
                         moved.append({"caption": cap["text"][:40], "moved_to": round(new_y, 2), "faces": len(faces), "product_areas": len(product)})
+            anim = cap.get("animation") or plan.get("caption_animation") or {}
             for k, (p0, p1, sp) in enumerate(pieces):
-                png = os.path.join(tmp, f"caption_{i:02d}_{k:02d}.png")
-                n = render_caption_layer(png, (width, height), cap["text"], sp)
-                layers.append((png, p0, p1))
+                # a caption split at the cuts animates in once (first piece) and out once (last piece)
+                a_k = {"in": anim.get("in", "none") if k == 0 else "none", "in_s": anim.get("in_s"),
+                       "out": anim.get("out", "cut") if k == len(pieces) - 1 else "cut", "out_s": anim.get("out_s"),
+                       "blink_color": anim.get("blink_color"), "blink_s": anim.get("blink_s")}
+                if anim.get("in") == "blink":
+                    a_k["in"] = "blink"
+                new_layers, n = caption_layers(tmp, f"caption_{i:02d}_{k:02d}", (width, height), cap["text"], sp, p0, p1, a_k, fps)
+                layers += new_layers
             caption_lines.append(n)
         for i, ins in enumerate(plan.get("insets", [])):
             png = os.path.join(tmp, f"inset_{i:02d}.png")
@@ -775,18 +912,27 @@ def main():
                     moved.append({"inset": os.path.basename(ins["image"]), "position": placed.get("position"), "top": placed.get("top"), "arrow_to": placed.get("arrow_to"), "faces": len(faces)})
                 ins = placed
             render_inset_layer(png, (width, height), ins)
-            layers.append((png, float(ins["start"]), min(float(ins["end"]), duration)))
+            i0, i1 = float(ins["start"]), min(float(ins["end"]), duration)
+            if ins.get("animate", True):  # the client's ads bring the photo inset in a few frames after the cut
+                from PIL import Image
+                with Image.open(png) as im:
+                    bb = im.getbbox() or (0, 0, width, height)
+                pops = motion_frames(tmp, f"inset_{i:02d}", png, "pop", i0, 0.25, fps, ((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2), "in")
+                layers += pops
+                i0 = pops[-1][2]
+            layers.append((png, i0, i1, None))
         if plan.get("disclaimer"):
             disc = plan["disclaimer"]
             png = os.path.join(tmp, "disclaimer.png")
             spec = caption_spec({"style": "pill", "position": disc.get("position", 0.06), "size": disc.get("size", int(width * 0.026))}, (width, height))
             render_caption_layer(png, (width, height), disc["text"], spec)
-            layers.append((png, 0.0, content_end if plan.get("outro") else duration))
+            layers.append((png, 0.0, content_end if plan.get("outro") else duration, None))
 
         def render(layers, out_path):
             cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", base]
-            for png, _, _ in layers:
-                cmd += ["-i", png]
+            for png, _, end, fx in layers:
+                # animated layers are looped stills so per-frame filters (fade, scale) see the running time
+                cmd += (["-loop", "1", "-framerate", str(fps), "-t", f"{end + 0.1:.3f}", "-i", png] if fx else ["-i", png])
             music = plan.get("music")
             inputs = 1 + len(layers)
             music_index = None
@@ -800,9 +946,28 @@ def main():
                 sfx_indexes.append((inputs, sfx))
                 inputs += 1
             chains, label = [], "0:v"
-            for n, (_, start, end) in enumerate(layers, start=1):
+            for n, (_, start, end, fx) in enumerate(layers, start=1):
                 out_label = f"v{n}"
-                chains.append(f"[{label}][{n}:v]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[{out_label}]")
+                src, x, y = f"[{n}:v]", "0", "0"
+                if fx:
+                    f = [f"[{n}:v]format=rgba"]
+                    if fx.get("fade_in"):
+                        f.append(f"fade=t=in:st={start:.3f}:d={fx['fade_in']:.3f}:alpha=1")
+                    if fx.get("fade_out"):
+                        f.append(f"fade=t=out:st={max(start, end - fx['fade_out']):.3f}:d={fx['fade_out']:.3f}:alpha=1")
+                    cx, cy = fx.get("centre", (width / 2, height / 2))
+                    if fx.get("pop"):  # grow from 85% with a small overshoot, around the caption's own centre
+                        d = fx["pop"]
+                        k = f"if(lt(t,{start:.3f}),0.85,if(lt(t,{start + d:.3f}),0.85+0.15*(t-{start:.3f})/{d:.3f}+0.08*sin(PI*(t-{start:.3f})/{d:.3f}),1))"
+                        f.append(f"scale=w='trunc(iw*{k}/2)*2':h='trunc(ih*{k}/2)*2':eval=frame")
+                        x, y = f"{cx:.1f}-{cx:.1f}*w/{width}", f"{cy:.1f}-{cy:.1f}*h/{height}"
+                    if fx.get("slide_up"):
+                        d = fx["slide_up"]
+                        y = f"if(lt(t,{start + d:.3f}),{height * 0.035:.1f}*(1-max(0,(t-{start:.3f}))/{d:.3f}),0)"
+                    chains.append(",".join(f) + f"[l{n}]")
+                    src = f"[l{n}]"
+                pos = f"x='{x}':y='{y}':eval=frame" if fx else "0:0"
+                chains.append(f"[{label}]{src}overlay={pos}:enable='between(t,{start:.3f},{end:.3f})'[{out_label}]")
                 label = out_label
             audio_labels = ["[0:a]"] if (keep_audio or not music and not sfx_indexes) else []
             if music:

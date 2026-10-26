@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowLeft, ExternalLink, FastForward, Pause, Play } from "lucide-react";
+import { DeleteJob, EditableTitle } from "@/components/job-actions";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import type { Job } from "@/lib/api";
@@ -13,6 +16,8 @@ export function JobHeader({ job, title, subtitle, replay }: {
   replay?: { enabled: boolean; speed: number; t: number; paused: boolean; onPause: () => void; onJumpEnd: () => void };
 }) {
   const s = t();
+  const router = useRouter();
+  const [name, setName] = useState(job.title);
   return (
     <header className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -20,7 +25,8 @@ export function JobHeader({ job, title, subtitle, replay }: {
           <ArrowLeft className="size-3.5" aria-hidden />{s.common.backToHistory}
         </Link>
         <span aria-hidden>·</span>
-        <span>{job.title}</span>
+        {job.demo || replay?.enabled ? <span>{name}</span> : <EditableTitle id={job.id} title={name} onRenamed={setName} />}
+        {!job.read_only && !replay?.enabled && <span className="ml-auto"><DeleteJob id={job.id} onDeleted={() => router.push("/")} /></span>}
       </div>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-2xl">
@@ -74,3 +80,4 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
     </div>
   );
 }
+

@@ -4,7 +4,9 @@ import { motion } from "framer-motion";
 import { ChevronDown, FileText, Loader2, Send, Wand2 } from "lucide-react";
 import { useState } from "react";
 import { ClipWorkbench } from "@/components/clip-workbench";
-import { DownloadParts } from "@/components/download-parts";
+import { DownloadAll } from "@/components/download-parts";
+import { DownloadButton } from "@/components/download-button";
+import { CaptionEditor } from "@/components/caption-editor";
 import { PaidCallsPanel } from "@/components/paid-calls";
 import { RawLog } from "@/components/raw-log";
 import { Scorecard } from "@/components/scorecard";
@@ -23,6 +25,8 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const final = job.finals[job.finals.length - 1];
+  const names = new Set(job.files.map((f) => f.name));
+  const cleanName = names.has("final_clean.mp4") ? "final_clean.mp4" : final && names.has(final.file.replace(/\.mp4$/, "_clean.mp4")) ? final.file.replace(/\.mp4$/, "_clean.mp4") : null;
   const sendRevision = async () => {
     if (!revision.trim()) return;
     setBusy(true);
@@ -31,7 +35,15 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
 
   return (
     <div className="space-y-8">
-      <VideoCompare sampleSrc={fileUrl(job.sample_url)} finalSrc={fileUrl(job.final_url)} downloadName={final?.file} />
+      <div className="space-y-3">
+        <VideoCompare sampleSrc={fileUrl(job.sample_url)} finalSrc={fileUrl(job.final_url)} downloadName={final?.file} />
+        <div className="flex flex-wrap items-center gap-2">
+          <DownloadButton url={job.final_url} name={final?.file ?? "final.mp4"} label={s.results.finalWithText} />
+          {cleanName && <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${cleanName}`} name={cleanName} label={s.results.cleanMaster} />}
+        </div>
+      </div>
+
+      <CaptionEditor jobId={job.id} />
 
       {final?.frames.length ? (
         <section aria-labelledby="frames">
@@ -46,8 +58,6 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
           </div>
         </section>
       ) : null}
-
-      <DownloadParts jobId={job.id} />
 
       <ClipWorkbench job={job} onSend={onSend} />
 
@@ -71,6 +81,7 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
                       ) : <span className="grid size-full place-items-center text-xs text-muted-foreground">{s.common.none}</span>}
                     </div>
                     <figcaption className="mt-1.5 truncate text-sm font-semibold">{person?.name ?? pr.person ?? "–"}</figcaption>
+                    {person?.image ? <DownloadButton url={person.image} className="mt-1" label={s.common.download} /> : null}
                   </figure>
                   <figure className="min-w-0">
                     <div className="aspect-square overflow-hidden rounded-xl bg-surface ring-1 ring-foreground/8">
@@ -80,6 +91,7 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
                       ) : <span className="grid size-full place-items-center text-xs text-muted-foreground">{s.common.none}</span>}
                     </div>
                     <figcaption className="mt-1.5 truncate text-sm text-muted-foreground">{pr.name}</figcaption>
+                    {pr.image ? <DownloadButton url={pr.image} className="mt-1" label={s.common.download} /> : null}
                   </figure>
                   <figure className="w-16 sm:w-20">
                     <div className="aspect-[3/4] overflow-hidden rounded-lg bg-surface ring-1 ring-foreground/8">
@@ -89,6 +101,7 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
                       ) : null}
                     </div>
                     <figcaption className="mt-1.5 text-[11px] leading-tight text-muted-foreground">{s.results.artwork}</figcaption>
+                    {pr.artwork ? <DownloadButton url={pr.artwork} className="mt-1 px-2" label="" /> : null}
                   </figure>
                 </motion.div>
               );
@@ -125,6 +138,8 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
           </Button>
         )}
       </section>
+
+      <DownloadAll jobId={job.id} />
 
       <HowMade job={job} events={events} />
     </div>

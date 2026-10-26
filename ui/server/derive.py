@@ -498,6 +498,74 @@ def name_from(fname: str, prefix: str) -> str:
     return pretty_name(stem[len(prefix):]) if stem.startswith(prefix) else pretty_name(stem)
 
 
+def _arg_values(args: List[str], flag: str) -> List[str]:
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == flag]
+
+
+def command_inputs(files_dir: Path, names: set) -> Dict[str, dict]:
+    """What each clip was actually generated from: batch.py's tasks.json "inputs" (recorded since 25 Oct 2026) or,
+    for older runs, the generate-with-seedance lines of commands*.sh ("# <clip_id> (...)" then the node line).
+    clip_id -> {first_frame, images [in @Image order], videos, version, model}; file names are local basenames."""
+    import shlex
+    out: Dict[str, dict] = {}
+    cmd_files = sorted((n for n in names if re.match(r"^commands.*\.sh$", n)), key=lambda n: (files_dir / n).stat().st_mtime if (files_dir / n).exists() else 0)
+    for n in cmd_files:
+        try:
+            lines = (files_dir / n).read_text().splitlines()
+        except OSError:
+            continue
+        cid = None
+        for line in lines:
+            m = re.match(r"\s*#\s*([A-Za-z0-9_.-]+)\s*\(", line)
+            if m:
+                cid = m.group(1)
+                continue
+            if cid and "seedance-generate" in line:
+                try:
+                    args = shlex.split(line)
+                except ValueError:
+                    cid = None
+                    continue
+                out[cid] = _inputs_from_args(args)
+                cid = None
+    tj = read_json(files_dir / "tasks.json") if "tasks.json" in names else None
+    for cid, t in ((tj or {}).get("tasks") or {}).items() if isinstance(tj, dict) else []:
+        if isinstance(t, dict) and isinstance(t.get("inputs"), dict):
+            out[cid] = {k: t["inputs"].get(k) for k in ("first_frame", "images", "videos", "version", "model", "prompt_file")}
+    for v in out.values():
+        for k in ("first_frame",):
+            if v.get(k):
+                v[k] = Path(str(v[k])).name
+        v["images"] = [Path(str(x)).name for x in v.get("images") or []]
+    return out
+
+
+def _inputs_from_args(args: List[str]) -> dict:
+    ff = _arg_values(args, "--first-frame")
+    return {"first_frame": ff[0] if ff else None, "images": _arg_values(args, "--reference-image") + _arg_values(args, "--image"),
+            "videos": _arg_values(args, "--reference-video"), "version": (_arg_values(args, "--version") or [None])[0],
+            "model": (_arg_values(args, "--model") or [None])[0]}
+
+
+def still_jobs(files_dir: Path, names: set) -> Dict[str, dict]:
+    """Seedream stills made through edit_batch job files (jobs_*.json / still_jobs*.json: [{name, args}]):
+    output stem -> {prompt, images [basenames in order]}."""
+    out: Dict[str, dict] = {}
+    for n in sorted(names):
+        if not re.match(r"^(jobs|still_jobs|edit_jobs)[\w-]*\.json$", n):
+            continue
+        data = read_json(files_dir / n)
+        for job in data if isinstance(data, list) else []:
+            if not isinstance(job, dict) or not isinstance(job.get("args"), list):
+                continue
+            args = [str(a) for a in job["args"]]
+            stem = (_arg_values(args, "--name") or [job.get("name")])[0]
+            if stem:
+                out[str(stem)] = {"prompt": (_arg_values(args, "--prompt") or [""])[0],
+                                  "images": [Path(x).name for x in _arg_values(args, "--image")]}
+    return out
+
+
 def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps: Optional[set]) -> dict:
     by_name = {f["name"]: f for f in files}
     url = lambda n: f"/api/jobs/{job_id}/files/{n}"  # noqa: E731
@@ -540,15 +608,21 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
     names = {f["name"] for f in files}
     # the agent's own record wins: clips.json entries with status "current" / "superseded"
     cj = read_json(files_dir / "clips.json") if (files_dir / "clips.json").exists() else None
-    cj_list = cj.get("clips") if isinstance(cj, dict) else cj
+    cj_list = cj.get("clips") if isinstance(cj, dict) and isinstance(cj.get("clips"), list) else \
+        cj.get("takes") if isinstance(cj, dict) and isinstance(cj.get("takes"), list) else cj
+    if isinstance(cj_list, dict):  # the agent often writes {clip_id: {file, status, current, superseded_by}}
+        cj_list = [{"id": k, **v} for k, v in cj_list.items() if isinstance(v, dict)]
     current_files, superseded_files = set(), set()
     for m in cj_list if isinstance(cj_list, list) else []:
-        if isinstance(m, dict) and m.get("file"):
+        if isinstance(m, dict) and (m.get("file") or m.get("id")):
+            fname = Path(str(m.get("file") or f"{m.get('id')}.mp4")).name
             st = str(m.get("status", "")).lower()
-            if st in ("superseded", "rejected", "archived"):
-                superseded_files.add(Path(m["file"]).name)
-            elif st == "current":
-                current_files.add(Path(m["file"]).name)
+            if st in ("superseded", "rejected", "archived") or m.get("superseded") is True or m.get("superseded_by") or m.get("current") is False:
+                superseded_files.add(fname)
+            elif st == "current" or m.get("current") is True:
+                current_files.add(fname)
+    cmd_inputs = command_inputs(files_dir, names)
+    stills = still_jobs(files_dir, names)
     for base, takes in groups.items():
         # current take: marked current in clips.json > not marked superseded > the plain name > the newest file
         takes.sort(key=lambda x: (x["name"] in current_files, x["name"] not in superseded_files, Path(x["name"]).stem == base, x.get("mtime") or 0))
@@ -561,7 +635,18 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
                 prompt = (files_dir / pfile).read_text()[:6000]
             except OSError:
                 prompt = None
-        pc = plan_clips.get(base) or next((v for k, v in plan_clips.items() if k and base.startswith(k)), None) or {}
+        cur_stem = Path(cur["name"]).stem
+        # retries are renamed (clip_03_couch_v4) in prompts.json: match by base, prefer the current take's id
+        same_base = [k for k in plan_clips if k and re.sub(r"_v\d+(?:_[a-z0-9-]+)*$", "", k, flags=re.I) == base]
+        pc = plan_clips.get(cur_stem) or plan_clips.get(base) or \
+            (plan_clips[sorted(same_base, key=lambda k: int((re.search(r"_v(\d+)", k) or [0, 1])[1]))[-1]] if same_base else None) or \
+            next((v for k, v in plan_clips.items() if k and base.startswith(k)), None) or {}
+        if f"{cur_stem}.prompt.txt" in names and pfile != f"{cur_stem}.prompt.txt":  # the current take's own prompt
+            pfile = f"{cur_stem}.prompt.txt"
+            try:
+                prompt = (files_dir / pfile).read_text()[:6000]
+            except OSError:
+                pass
         if not prompt and pc.get("prompt"):
             prompt = pc["prompt"][:6000]
         def resolve(token):
@@ -593,7 +678,30 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
                 if n not in have and not any(n != o and o.endswith(n) for o in mentioned):
                     refs.append({"id": Path(n).stem, "kind": "mentioned", "file": n, "url": url(n), "describe": "named in the prompt"})
                     have.add(n)
-        clips.append({"id": base, "n": int(idx.group(1)) if idx else 0, "file": cur["name"], "url": url(cur["name"]), "size": cur["size"],
+        # what was actually sent to Seedance (commands*.sh / tasks.json) beats the plan: first frame + @Image order
+        ci = cmd_inputs.get(cur_stem) or cmd_inputs.get(base) or next((cmd_inputs[k] for k in sorted(cmd_inputs, reverse=True)
+                                                                          if re.sub(r"_v\d+(?:_[a-z0-9-]+)*$", "", k, flags=re.I) == base), None)
+        model = None
+        if ci:
+            model = ci.get("model") or ci.get("version")
+            sent = []
+            if ci.get("first_frame") and ci["first_frame"] in names:
+                sent.append({"id": "first_frame", "kind": "first_frame", "file": ci["first_frame"], "url": url(ci["first_frame"]), "describe": "opening still (first frame)"})
+            for n_img in ci.get("images") or []:
+                if n_img in names:
+                    known = next((r for r in refs if r.get("file") == n_img), {})
+                    sent.append({"id": known.get("id") or Path(n_img).stem, "kind": "reference", "file": n_img, "url": url(n_img), "describe": known.get("describe")})
+            if sent:
+                refs = sent + [r for r in refs if r.get("kind") == "mentioned" and r.get("file") not in {x["file"] for x in sent}]
+        # the opening still's own prompt and inputs (Seedream job files)
+        ffile = next((r.get("file") for r in refs if r.get("kind") == "first_frame"), None)
+        sj = stills.get(Path(ffile).stem) if ffile else None
+        if ffile and not sj:
+            sj = next((v for k, v in stills.items() if Path(ffile).stem.startswith(k)), None)
+        if sj and not still.get("prompt"):
+            still = {"prompt": sj["prompt"]}
+            still_refs = [{"id": Path(n_img).stem, "kind": "reference", "file": n_img, "url": url(n_img)} for n_img in sj["images"] if n_img in names]
+        clips.append({"id": base, "n": int(idx.group(1)) if idx else 0, "file": cur["name"], "url": url(cur["name"]), "size": cur["size"], "model": model,
                       "prompt": prompt, "prompt_file": pfile, "references": refs, "duration_s": pc.get("duration"),
                       "mode": pc.get("mode"), "still_prompt": (still.get("prompt") or "")[:6000] or None, "still_references": still_refs,
                       "takes": [{"file": t["name"], "url": url(t["name"]), "mtime": t.get("mtime")} for t in takes[:-1]]})
@@ -768,6 +876,7 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
         thumbnail = assets["finals"][-1]["frames"][0]
     out = {
         **{k: job.get(k) for k in ("id", "title", "created_at", "demo", "session_id", "inputs")},
+        "read_only": bool(job.get("demo") or job.get("example") or job.get("frozen")),
         "status": st["status"], "awaiting_approval": st["awaiting_approval"], "awaiting_step": st.get("awaiting_step"), "session_phase": st["phase"],
         "steps": parsed["steps"], "current_step": parsed["current_step"], "plan_text": parsed["plan_text"],
         "paid_calls": paid, "files": files, "prompts": collect_prompts(files_dir.parent, files), "errors": errors, "usage": usage, "elapsed_s": elapsed,
@@ -796,6 +905,7 @@ def job_summary(job: dict, derived: dict) -> dict:
     return {
         "production_s": prod.get("production_s"), "cost_per_video_usd": prod.get("cost_per_video_usd"),
         "id": job["id"], "title": job.get("title"), "created_at": job.get("created_at"), "demo": bool(job.get("demo")),
+        "read_only": bool(job.get("demo") or job.get("example") or job.get("frozen")),
         "status": derived["status"], "thumbnail": derived["thumbnail"], "current_step": derived["current_step"],
         "product_url": (job.get("inputs") or {}).get("product_url"), "elapsed_s": derived["elapsed_s"],
         "verdict": derived["quality"][-1]["verdict"] if derived["quality"] else None,

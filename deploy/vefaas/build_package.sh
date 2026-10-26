@@ -20,6 +20,10 @@ echo "[build] backend"
 mkdir -p "$STAGE/ui/server"
 cp "$ROOT"/ui/server/*.py "$STAGE/ui/server/"
 cp "$ROOT/tools/ma_client.py" "$STAGE/tools/"
+# caption editor: the same drawing code, fonts and outro as the agent's video assembly
+mkdir -p "$STAGE/skills/video-assembly"
+cp -R "$ROOT/skills/video-assembly/scripts" "$ROOT/skills/video-assembly/assets" "$STAGE/skills/video-assembly/"
+find "$STAGE/skills" -name "__pycache__" -type d -prune -exec rm -rf {} +
 # the recorded demo run (offline replay, "Demo mode" on the history page): left out unless INCLUDE_DEMO=1
 if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R "$ROOT/runs/demo_caseB" "$STAGE/runs/"; fi
 # read-only copies of delivered jobs (ModelArk keeps session files for about a day); SHOWCASE_JOBS overrides the list
@@ -33,6 +37,8 @@ cat > "$STAGE/requirements.txt" <<'EOF'
 fastapi==0.128.8
 uvicorn==0.39.0
 python-multipart==0.0.20
+pillow==11.0.0
+imageio-ffmpeg==0.6.0
 EOF
 "$PY" -m pip download --quiet --only-binary=:all: --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 \
   --python-version 3.11 --implementation cp -d "$OUT/wheels" -r "$STAGE/requirements.txt"
@@ -59,6 +65,11 @@ export UI_SHOW_COST="${UI_SHOW_COST:-0}"
 # jobs started before this package was built are shipped as showcase copies or left out (their session files expire)
 export UI_DISCOVER_AFTER="${UI_DISCOVER_AFTER:-__BUILD_TIME__}"
 mkdir -p "$UI_DATA_DIR"
+# caption editor: the code folder is read-only and ZIP extraction may drop the execute bit, so run ffmpeg from /tmp
+FF_SRC=$(ls python_deps/imageio_ffmpeg/binaries/ffmpeg-linux-* 2>/dev/null | head -1)
+if [ -n "$FF_SRC" ] && [ -z "${IMAGEIO_FFMPEG_EXE:-}" ]; then
+  cp "$FF_SRC" /tmp/ffmpeg && chmod +x /tmp/ffmpeg && export IMAGEIO_FFMPEG_EXE=/tmp/ffmpeg
+fi
 exec python3 -m uvicorn main:app --app-dir ui/server --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips '*'
 EOF
 

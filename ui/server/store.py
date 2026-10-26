@@ -83,11 +83,31 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+TITLE_OVERRIDES = DATA_DIR.parent / "title_overrides.json"  # renames of read-only (shipped) jobs, writable folder
+
+
+def title_overrides() -> dict:
+    try:
+        return json.loads(TITLE_OVERRIDES.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def set_title_override(job_id: str, title: str) -> None:
+    data = title_overrides()
+    data[job_id] = title
+    TITLE_OVERRIDES.parent.mkdir(parents=True, exist_ok=True)
+    TITLE_OVERRIDES.write_text(json.dumps(data, indent=1, ensure_ascii=False))
+
+
 def read_job(d: Path) -> dict:
     job = json.loads((d / "job.json").read_text())
     job.setdefault("id", d.name)
     job.setdefault("demo", False)
     job.setdefault("inputs", {})
+    renamed = title_overrides().get(job["id"])
+    if renamed:
+        job["title"] = renamed
     return job
 
 

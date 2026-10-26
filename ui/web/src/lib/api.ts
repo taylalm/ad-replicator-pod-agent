@@ -96,6 +96,7 @@ export interface Job {
   title: string;
   created_at: string;
   demo: boolean;
+  read_only?: boolean;
   session_id: string | null;
   inputs: JobInputs;
   status: JobStatus;
@@ -140,7 +141,7 @@ export interface Production {
 }
 
 export interface JobRow {
-  id: string; title: string; created_at: string | null; demo: boolean; status: JobStatus; thumbnail: string | null;
+  id: string; title: string; created_at: string | null; demo: boolean; read_only?: boolean; status: JobStatus; thumbnail: string | null;
   current_step: number | null; product_url?: string; elapsed_s?: number | null; verdict?: string | null; paid_total?: number; error?: string;
   production_s?: number | null; cost_per_video_usd?: number | null;
 }
@@ -230,8 +231,37 @@ export const api = {
   uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
   uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>
     sendFile(`/api/jobs/${encodeURIComponent(id)}/references`, file, note, id),
+  renameJob: (id: string, title: string) =>
+    request<{ ok: boolean; title: string; warning?: string }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+  deleteJob: (id: string) => request<{ ok: boolean; deleted: string }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   message: (id: string, text: string) =>
     request<{ ok: boolean; demo?: boolean }>(`/api/jobs/${encodeURIComponent(id)}/message`, { method: "POST", body: JSON.stringify({ text }) }),
+};
+
+export type Animation = { in?: string; out?: string; in_s?: number; out_s?: number };
+export type CaptionItem = { id: string; text: string; start: number; end: number; style: string; position: number; x: number; enabled: boolean; animation?: Animation; approved_wording?: boolean };
+export type InsetItem = { id: string; image: string; start: number; end: number; position: string; top: number; left?: number | null; width: number; arrow_to?: [number, number] | null; enabled: boolean };
+export type CaptionDoc = {
+  version: number; size: [number, number]; fps: number; base: string | null; captions: CaptionItem[]; insets: InsetItem[];
+  reference_captions: string[]; outro_start: number | null; styles?: string[]; animations_in?: string[]; animations_out?: string[];
+};
+export type ExportState = { state: "idle" | "running" | "done" | "failed"; file?: string | null; error?: string | null; warnings?: string[] };
+
+export const captionsApi = {
+  get: (id: string) => request<{ doc: CaptionDoc; base_url: string | null; edits: { name: string; url: string }[]; export: ExportState | null; read_only: boolean }>(
+    `/api/jobs/${encodeURIComponent(id)}/captions`),
+  save: (id: string, doc: CaptionDoc) => request<{ ok: boolean; doc: CaptionDoc }>(`/api/jobs/${encodeURIComponent(id)}/captions`, { method: "PUT", body: JSON.stringify({ doc }) }),
+  export: (id: string, doc: CaptionDoc) => request<ExportState>(`/api/jobs/${encodeURIComponent(id)}/captions/export`, { method: "POST", body: JSON.stringify({ doc }) }),
+  status: (id: string) => request<ExportState>(`/api/jobs/${encodeURIComponent(id)}/captions/export`),
+  /** A full-frame transparent PNG of one caption or inset, and its grab box [x0, y0, x1, y1] as fractions of the frame. */
+  preview: async (id: string, kind: "caption" | "inset", item: object): Promise<{ url: string; box: number[] }> => {
+    const res = await fetch(`${API_BASE}/api/jobs/${encodeURIComponent(id)}/captions/preview`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ kind, item }),
+    });
+    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({})))?.detail || res.statusText);
+    const box = (res.headers.get("X-Box") || "0,0,0,0").split(",").map(Number);
+    return { url: URL.createObjectURL(await res.blob()), box };
+  },
 };
 
 export function fileUrl(localUrl: string | null | undefined): string {

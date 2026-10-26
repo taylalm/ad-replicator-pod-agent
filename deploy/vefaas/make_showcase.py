@@ -67,6 +67,9 @@ for job_id in IDS:
     if derived.get("finals") and not (src / "files" / "final.mp4").exists():
         keep_video.add(derived["finals"][-1]["file"])
     job.update({"frozen": True, "status": derived["status"]})
+    titles = Path(__file__).with_name("showcase_titles.json")  # renames that ship with the package
+    if titles.exists():
+        job["title"] = json.loads(titles.read_text()).get(job_id, job.get("title"))
     job["files_index"] = {}
     (dst / "job.json").write_text(json.dumps(job, indent=1))
     (dst / "events.json").write_text(json.dumps({"events": [trim(e) for e in events]}))
