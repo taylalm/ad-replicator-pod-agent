@@ -31,7 +31,7 @@ function JobScreen() {
     speed: search.has("speed") ? Number(search.get("speed")) : 24,
     startT: search.has("t") ? Number(search.get("t")) : 0,
   }), [search]);
-  const { job, events, error, send, replayT, jumpTo, replayPaused, setReplayPaused } = useJob(id, replay);
+  const { job, events, error, send, refresh, replayT, jumpTo, replayPaused, setReplayPaused } = useJob(id, replay);
 
   if (error === "backend" && !job) return <p role="alert" className="rounded-2xl bg-danger-soft p-4 text-sm">{s.app.backendDown}</p>;
   if (error && !job) {
@@ -63,7 +63,7 @@ function JobScreen() {
           {view === "plan" && <PlanApproval job={job} onSend={send} replay={replay.enabled} />}
           {view === "step" && <StepReview job={job} onSend={send} replay={replay.enabled} />}
           {view === "live" && <LiveProgress job={job} events={events} onSend={send} />}
-          {view === "results" && <Results job={job} events={events} onSend={send} />}
+          {view === "results" && <Results job={job} events={events} onSend={send} onRefresh={refresh} />}
         </motion.div>
       </AnimatePresence>
       <p className="text-xs text-muted-foreground">{s.common.sessionId}: <span className="font-mono">{job.session_id}</span>{job.elapsed_s ? ` · ${fmtDuration(job.elapsed_s)}` : ""}</p>

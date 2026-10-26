@@ -2,11 +2,12 @@
 
 import { AtSign, Check, ChevronDown, Download, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-react";
 import { DownloadButton } from "@/components/download-button";
+import { ClipStudio, useGen, type GenStatus } from "@/components/clip-studio";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { api, fileUrl, type Clip, type ClipRef, type Job } from "@/lib/api";
+import { api, fileUrl, genApi, type Clip, type ClipRef, type Draft, type ExportState, type Job } from "@/lib/api";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
 
@@ -110,7 +111,7 @@ function refLines(uploads: Upload[]): string[] {
   return uploads.filter((u) => u.path && !u.error).map((u) => `- ${u.path} | ${u.role}${u.note.trim() ? ` | ${u.note.trim()}` : ""}`);
 }
 
-function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: (text: string) => Promise<unknown>; index: number }) {
+function ClipCard({ job, clip, index, gen, refresh, onRebuild }: { job: Job; clip: Clip; index: number; gen: GenStatus | null; refresh: () => Promise<unknown>; onRebuild: (st: ExportState) => void }) {
   const s = t();
   const refs = clip.references ?? [];
   const stillRefs = clip.still_references ?? [];
@@ -128,23 +129,21 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
   const imageRefs = refs.filter((r) => r.kind !== "first_frame" && r.kind !== "mentioned");
   const mentioned = refs.filter((r) => r.kind === "mentioned");
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const [firstFrameFile, setFirstFrameFile] = useState<string | null>(firstFrame[0]?.file ?? null);
+  const [imageOverride, setImageOverride] = useState<string[] | null>(null);
+  const usedImages = imageOverride ?? imageRefs.filter((r) => r.file && !dropped[r.file ?? r.id]).map((r) => r.file!);
+  const loadDraft = (d: Draft) => {
+    if (d.prompt) setPrompt(d.prompt);
+    if (d.still_prompt) setStillPrompt(d.still_prompt);
+    if (d.first_frame !== undefined) setFirstFrameFile(d.first_frame ?? null);
+    if (d.inputs) setImageOverride(d.inputs.filter((i) => i.role !== "first_frame").map((i) => i.file));
+  };
   const insertTag = (tag: string) => {
     const el = promptRef.current;
     const at = el ? el.selectionStart : prompt.length;
     const next = `${prompt.slice(0, at)}${tag}${prompt.slice(at)}`;
     setPrompt(next);
     requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(at + tag.length, at + tag.length); } });
-  };
-
-  const regenerate = async () => {
-    const lines = [`REGENERATE: clip ${clip.id} | PROMPT: ${prompt.trim()}`];
-    if (clip.still_prompt != null && stillPrompt.trim() && stillPrompt.trim() !== (clip.still_prompt ?? "").trim()) lines.push(`STILL PROMPT (rebuild the opening still first): ${stillPrompt.trim()}`);
-    const drop = [...refs, ...stillRefs].filter((r) => dropped[r.file ?? r.id]).map((r) => r.file ?? r.id);
-    if (drop.length) lines.push(`DROP REFERENCES: ${drop.join(", ")}`);
-    const add = refLines(uploads);
-    if (add.length) lines.push("REFERENCES:", ...add);
-    setBusy(true);
-    try { await onSend(lines.join("\n")); setSent(true); } finally { setBusy(false); }
   };
 
   return (
@@ -196,7 +195,7 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
               </>
             ) : null}
           </section>
-          {clip.still_prompt != null ? (
+          {clip.still_prompt != null || firstFrame.length ? (
             <section>
               <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{s.clips.stillPrompt}</h4>
               <Textarea value={stillPrompt} onChange={(e) => setStillPrompt(e.target.value)} rows={5} className="rounded-xl font-mono text-xs leading-relaxed" aria-label={s.clips.stillPrompt} />
@@ -210,14 +209,9 @@ function ClipCard({ job, clip, onSend, index }: { job: Job; clip: Clip; onSend: 
             <h4 className="mb-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{s.clips.addRefs}</h4>
             <Uploader jobId={job.id} uploads={uploads} setUploads={setUploads} disabled={!!job.demo} />
           </section>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button className="rounded-full bg-brand text-brand-foreground hover:bg-brand/90" disabled={busy || sent || pending || !prompt.trim() || !!job.demo} onClick={regenerate}>
-              {busy ? <Loader2 className="size-4 animate-spin" /> : sent ? <Check className="size-4" /> : <RotateCcw className="size-4" />}
-              {sent ? s.clips.sent : s.clips.regenerate}
-            </Button>
-            {sent ? <button type="button" className="text-xs text-muted-foreground hover:underline" onClick={() => setSent(false)}>{s.clips.again}</button> : null}
-            {pending ? <span className="text-xs text-muted-foreground">{s.clips.waitUploads}</span> : null}
-          </div>
+          <ClipStudio job={job} clip={clip} gen={gen} refresh={refresh} prompt={prompt} stillPrompt={stillPrompt}
+            firstFrame={firstFrameFile} images={usedImages} onLoadDraft={loadDraft} onRebuild={onRebuild}
+            attachments={uploads.filter((u) => u.path && !u.error).map((u) => ({ path: u.path!, note: [u.role, u.note].filter(Boolean).join(": ") }))} />
         </div>
       </div>
     </details>
@@ -267,15 +261,44 @@ function NewClip({ job, onSend }: { job: Job; onSend: (text: string) => Promise<
 }
 
 /** Every clip with the inputs and prompts that made it; edit, add reference uploads and regenerate one clip at a time. */
-export function ClipWorkbench({ job, onSend }: { job: Job; onSend: (text: string) => Promise<unknown> }) {
+export function ClipWorkbench({ job, onSend, onUpdated }: { job: Job; onSend: (text: string) => Promise<unknown>; onUpdated?: () => void }) {
   const s = t();
+  const { status: gen, refresh } = useGen(job.id, job.clips.length > 0);
+  const [rebuild, setRebuild] = useState<ExportState | null>(null);
+  const accepted = (gen?.takes ?? []).filter((x) => x.kind === "clip" && x.accepted).length;
+  const watch = (first: ExportState) => {
+    setRebuild(first);
+    if (first.state !== "running") return;
+    const poll = setInterval(async () => {
+      const st = await fetch(fileUrl(`/api/jobs/${encodeURIComponent(job.id)}/captions/export`)).then((r) => r.json()).catch(() => null);
+      if (st) setRebuild(st);
+      if (!st || st.state !== "running") {
+        clearInterval(poll);
+        if (st?.state === "done") onUpdated?.();  // "Your new ad" and the thumbnail switch to the rebuilt version
+      }
+    }, 3000);
+  };
+  const doRebuild = async () => {
+    try { watch(await genApi.rebuild(job.id)); }
+    catch (e) { setRebuild({ state: "failed", error: e instanceof Error ? e.message : String(e) }); }
+  };
   if (!job.clips.length) return null;
   return (
     <section aria-labelledby="clip-workbench">
       <h2 id="clip-workbench" className="mb-1 font-display text-xl font-medium">{s.clips.title} <span className="text-base font-normal text-muted-foreground">· {job.clips.length}</span></h2>
       <p className="mb-3 text-sm text-muted-foreground">{s.clips.hint}</p>
+      {(accepted > 0 || rebuild?.state === "running") && !job.demo ? (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl bg-brand-soft px-3 py-2 text-sm">
+          <span>{s.studio.acceptedCount(accepted)}</span>
+          <Button size="sm" className="rounded-full" onClick={doRebuild} disabled={rebuild?.state === "running"}>
+            {rebuild?.state === "running" ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}{rebuild?.state === "running" ? s.studio.rebuilding : s.studio.rebuild}
+          </Button>
+          {rebuild?.state === "done" && rebuild.file ? <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${rebuild.file}`} name={rebuild.file} label={rebuild.file} /> : null}
+          {rebuild?.state === "failed" ? <span className="text-destructive">{rebuild.error}</span> : null}
+        </div>
+      ) : null}
       <div className="space-y-3">
-        {job.clips.map((c, i) => <ClipCard key={`${c.id}-${c.file}-${c.takes?.length ?? 0}`} job={job} clip={c} onSend={onSend} index={i} />)}
+        {job.clips.map((c, i) => <ClipCard key={`${c.id}-${c.file}-${c.takes?.length ?? 0}`} job={job} clip={c} index={i} gen={gen} refresh={refresh} onRebuild={watch} />)}
         <NewClip job={job} onSend={onSend} />
       </div>
     </section>

@@ -132,7 +132,7 @@ def restore_web_files(client, job: dict, d: Path) -> List[str]:
             if r.get("type") != "file" or not mount.startswith("/mnt/session/uploads/web_"):
                 continue
             name = Path(mount).name[len("web_"):]
-            dest = d / name if name == "captions_doc.json" else store.files_dir(d) / name
+            dest = d / name if name in ("captions_doc.json", "web_takes.json") else store.files_dir(d) / name
             if dest.exists():
                 continue
             url = (client.get(f"/files/{r['file_id']}") or {}).get("download_url")

@@ -159,6 +159,18 @@ def preview_png(d: Path, doc: dict, kind: str, item: dict, out_path: Path, remot
     return out_path
 
 
+def make_thumb(video: Path) -> Optional[Path]:
+    """A frame of a new version for the History card (final_edit_vN_thumb.jpg)."""
+    try:
+        import imageio_ffmpeg
+        out = video.with_name(video.stem + "_thumb.jpg")
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-ss", "1.0", "-i", str(video),
+                        "-frames:v", "1", "-vf", "scale=360:-2,format=yuvj420p", "-q:v", "4", str(out)], check=False, timeout=60)
+        return out if out.exists() else None
+    except Exception:
+        return None
+
+
 def next_version(files_dir: Path) -> int:
     nums = [int(m.group(1)) for p in files_dir.glob("final_edit_v*.mp4") if (m := re.match(r"final_edit_v(\d+)\.mp4$", p.name))]
     return max(nums, default=0) + 1
@@ -190,7 +202,9 @@ def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[
             if r.returncode != 0 or not res.get("ok"):
                 raise RuntimeError((res.get("error") or r.stderr or r.stdout)[-400:])
             state.update(state="done", file=name, warnings=res.get("warnings") or [])
-            for path, mount in ((files_dir / name, f"web_{name}"), (doc_path(d), "web_captions_doc.json")):
+            thumb = make_thumb(files_dir / name)
+            keep = [(files_dir / name, f"web_{name}"), (doc_path(d), "web_captions_doc.json")] + ([(thumb, f"web_{thumb.name}")] if thumb else [])
+            for path, mount in keep:
                 try:
                     persist(path, mount)
                 except Exception as e:  # the export exists here; only the copy in the agent session failed

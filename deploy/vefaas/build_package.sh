@@ -23,6 +23,9 @@ cp "$ROOT/tools/ma_client.py" "$STAGE/tools/"
 # caption editor: the same drawing code, fonts and outro as the agent's video assembly
 mkdir -p "$STAGE/skills/video-assembly"
 cp -R "$ROOT/skills/video-assembly/scripts" "$ROOT/skills/video-assembly/assets" "$STAGE/skills/video-assembly/"
+# direct regeneration checks new stills and takes with the quality gate's still_check / clip_check
+mkdir -p "$STAGE/skills/ugc-quality-gate"
+cp -R "$ROOT/skills/ugc-quality-gate/scripts" "$STAGE/skills/ugc-quality-gate/"
 find "$STAGE/skills" -name "__pycache__" -type d -prune -exec rm -rf {} +
 # the recorded demo run (offline replay, "Demo mode" on the history page): left out unless INCLUDE_DEMO=1
 if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R "$ROOT/runs/demo_caseB" "$STAGE/runs/"; fi

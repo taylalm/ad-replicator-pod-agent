@@ -19,13 +19,20 @@ import { fileUrl, type Job, type RawEvent } from "@/lib/api";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
 
-export function Results({ job, events, onSend }: { job: Job; events: RawEvent[]; onSend: (text: string) => Promise<unknown> }) {
+export function Results({ job, events, onSend, onRefresh }: { job: Job; events: RawEvent[]; onSend: (text: string) => Promise<unknown>; onRefresh?: () => Promise<unknown> | void }) {
   const s = t();
   const [revision, setRevision] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const final = job.finals[job.finals.length - 1];
   const names = new Set(job.files.map((f) => f.name));
+  // "Your new ad" plays the newest version made in the web app; the agent's original stays one click away
+  const edits = job.edits ?? [];
+  const [picked, setPicked] = useState<string | null>(null);
+  const latest = edits.length ? edits[edits.length - 1].file : "agent";
+  const shown = picked && (picked === "agent" || edits.some((e) => e.file === picked)) ? picked : latest;
+  const shownEdit = edits.find((e) => e.file === shown);
+  const shownUrl = shownEdit ? shownEdit.url : job.agent_final_url ?? job.final_url;
   const cleanName = names.has("final_clean.mp4") ? "final_clean.mp4" : final && names.has(final.file.replace(/\.mp4$/, "_clean.mp4")) ? final.file.replace(/\.mp4$/, "_clean.mp4") : null;
   const sendRevision = async () => {
     if (!revision.trim()) return;
@@ -36,14 +43,30 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
   return (
     <div className="space-y-8">
       <div className="space-y-3">
-        <VideoCompare sampleSrc={fileUrl(job.sample_url)} finalSrc={fileUrl(job.final_url)} downloadName={final?.file} />
+        {edits.length ? (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={s.results.versions}>
+            <span className="mr-1 text-xs font-semibold text-muted-foreground">{s.results.versions}</span>
+            {[...edits].reverse().map((e, i) => (
+              <button key={e.file} type="button" onClick={() => setPicked(e.file)} aria-pressed={shown === e.file}
+                className={cn("rounded-full px-2.5 py-1 text-xs ring-1", shown === e.file ? "bg-brand text-brand-foreground ring-brand" : "ring-foreground/12 hover:bg-muted")}>
+                {s.results.editVersion(e.version)}{i === 0 ? ` · ${s.results.latest}` : ""}
+              </button>
+            ))}
+            <button type="button" onClick={() => setPicked("agent")} aria-pressed={shown === "agent"}
+              className={cn("rounded-full px-2.5 py-1 text-xs ring-1", shown === "agent" ? "bg-brand text-brand-foreground ring-brand" : "ring-foreground/12 hover:bg-muted")}>
+              {s.results.agentOriginal}
+            </button>
+          </div>
+        ) : null}
+        <VideoCompare key={shownUrl ?? "none"} sampleSrc={fileUrl(job.sample_url)} finalSrc={fileUrl(shownUrl)} downloadName={shownEdit?.file ?? final?.file} />
         <div className="flex flex-wrap items-center gap-2">
-          <DownloadButton url={job.final_url} name={final?.file ?? "final.mp4"} label={s.results.finalWithText} />
-          {cleanName && <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${cleanName}`} name={cleanName} label={s.results.cleanMaster} />}
+          <DownloadButton url={shownUrl} name={shownEdit?.file ?? final?.file ?? "final.mp4"} label={s.results.finalWithText} />
+          {shownEdit?.clean ? <DownloadButton url={shownEdit.clean} name={shownEdit.file.replace(".mp4", "_clean.mp4")} label={s.results.cleanMaster} />
+            : !shownEdit && cleanName ? <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${cleanName}`} name={cleanName} label={s.results.cleanMaster} /> : null}
         </div>
       </div>
 
-      <CaptionEditor jobId={job.id} />
+      <CaptionEditor key={latest} jobId={job.id} onUpdated={() => { setPicked(null); void onRefresh?.(); }} />
 
       {final?.frames.length ? (
         <section aria-labelledby="frames">
@@ -59,7 +82,7 @@ export function Results({ job, events, onSend }: { job: Job; events: RawEvent[];
         </section>
       ) : null}
 
-      <ClipWorkbench job={job} onSend={onSend} />
+      <ClipWorkbench job={job} onSend={onSend} onUpdated={() => { setPicked(null); void onRefresh?.(); }} />
 
       <div className="grid gap-8">
         <section aria-labelledby="personalization">

@@ -34,6 +34,7 @@ export interface Clip {
   id: string; n: number; file: string; url: string; size: number; scene?: number | string; duration_s?: number; summary?: string;
   mode?: string | null; prompt?: string | null; prompt_file?: string | null; still_prompt?: string | null;
   references?: ClipRef[]; still_references?: ClipRef[]; takes?: Array<{ file: string; url: string; mtime?: number }>;
+  model?: string | null; drafts?: Draft[];
 }
 export interface SessionUpload { ok: boolean; path: string; filename: string; note?: string; file_id: string }
 export interface Final { version: number; file: string; url: string; size: number; frames: string[] }
@@ -122,6 +123,8 @@ export interface Job {
   clips: Clip[];
   finals: Final[];
   final_url: string | null;
+  agent_final_url?: string | null;
+  edits?: { version: number; file: string; url: string; thumb?: string | null; clean?: string | null }[];
   quality: QualityRound[];
   analysis: AnalysisBrief | null;
   plan: PlanJson | null;
@@ -232,7 +235,7 @@ export const api = {
   uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>
     sendFile(`/api/jobs/${encodeURIComponent(id)}/references`, file, note, id),
   renameJob: (id: string, title: string) =>
-    request<{ ok: boolean; title: string; warning?: string }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ title }) }),
+    request<{ ok: boolean; title: string; warning?: string }>(`/api/jobs/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ title }) }),
   deleteJob: (id: string) => request<{ ok: boolean; deleted: string }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   message: (id: string, text: string) =>
     request<{ ok: boolean; demo?: boolean }>(`/api/jobs/${encodeURIComponent(id)}/message`, { method: "POST", body: JSON.stringify({ text }) }),
@@ -262,6 +265,22 @@ export const captionsApi = {
     const box = (res.headers.get("X-Box") || "0,0,0,0").split(",").map(Number);
     return { url: URL.createObjectURL(await res.blob()), box };
   },
+};
+
+export type GenInput = { file?: string; asset?: string; role: "first_frame" | "reference" };
+export type GenCheck = { verdict?: string | null; summary?: string | null; payoff_window?: number[] | null; issues?: { kind: string; detail: string; fix?: string }[] };
+export type WebTake = { n: number; kind: "still" | "clip"; clip: string; file: string; model: string; prompt: string; inputs: GenInput[]; check?: GenCheck; accepted: boolean; created: string };
+export type GenRun = { state: "running" | "done" | "failed"; kind: "still" | "clip"; clip: string; file?: string | null; error?: string | null; step?: string; check?: GenCheck };
+export type Draft = { target?: string; prompt?: string; still_prompt?: string | null; first_frame?: string | null; inputs?: { tag?: string; file: string; role?: string }[]; model?: string; duration?: number; changes?: string[]; warnings?: string[]; file: string };
+
+export const genApi = {
+  status: (id: string) => request<{ run: GenRun | null; takes: WebTake[]; models: { video: Record<string, string>; image: Record<string, string> } }>(`/api/jobs/${encodeURIComponent(id)}/generate`),
+  generate: (id: string, body: { kind: "still" | "clip"; clip: string; prompt: string; inputs: GenInput[]; model?: string; duration?: number; resolution?: string; audio?: boolean; payoff?: string }) =>
+    request<GenRun>(`/api/jobs/${encodeURIComponent(id)}/generate`, { method: "POST", body: JSON.stringify(body) }),
+  accept: (id: string, file: string) => request<{ ok: boolean; rebuild?: ExportState | null }>(`/api/jobs/${encodeURIComponent(id)}/takes/accept`, { method: "POST", body: JSON.stringify({ file }) }),
+  rebuild: (id: string) => request<ExportState>(`/api/jobs/${encodeURIComponent(id)}/rebuild`, { method: "POST" }),
+  draft: (id: string, body: { clip: string; target: string; feedback: string; model?: string; attachments: { path: string; note?: string }[] }) =>
+    request<{ ok: boolean; sent: string }>(`/api/jobs/${encodeURIComponent(id)}/draft`, { method: "POST", body: JSON.stringify(body) }),
 };
 
 export function fileUrl(localUrl: string | null | undefined): string {

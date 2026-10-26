@@ -18,7 +18,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const round = (v: number) => Math.round(v * 1000) / 1000;
 
 /** Edit the captions and photo insets of a delivered ad over its clean master, then export a new MP4. */
-export function CaptionEditor({ jobId }: { jobId: string }) {
+export function CaptionEditor({ jobId, onUpdated }: { jobId: string; onUpdated?: () => void }) {
   const s = t();
   const [doc, setDoc] = useState<CaptionDoc | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
@@ -65,7 +65,7 @@ export function CaptionEditor({ jobId }: { jobId: string }) {
     const id = setInterval(() => {
       captionsApi.status(jobId).then((st) => {
         setExp(st);
-        if (st.state === "done") captionsApi.get(jobId).then((r) => setEdits(r.edits));
+        if (st.state === "done") { captionsApi.get(jobId).then((r) => { setEdits(r.edits); setDoc(r.doc); setBaseUrl(r.base_url); }); onUpdated?.(); }
       }).catch(() => undefined);
     }, 2000);
     return () => clearInterval(id);
@@ -243,10 +243,10 @@ export function CaptionEditor({ jobId }: { jobId: string }) {
 
           {!readOnly && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Button variant="outline" className="rounded-full" onClick={save} disabled={busy || !dirty}><Save className="size-4" />{s.editor.save}</Button>
               <Button className="rounded-full bg-brand text-brand-foreground hover:bg-brand/90" onClick={exportMp4} disabled={busy || exp?.state === "running"}>
-                {exp?.state === "running" ? <Loader2 className="size-4 animate-spin" /> : null}{exp?.state === "running" ? s.editor.exporting : s.editor.export}
+                {exp?.state === "running" ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}{exp?.state === "running" ? s.editor.exporting : s.editor.saveUpdate}
               </Button>
+              <button type="button" className="text-xs text-muted-foreground hover:underline disabled:opacity-50" onClick={save} disabled={busy || !dirty}>{s.editor.saveOnly}</button>
               {dirty && <span className="text-xs text-muted-foreground">{s.editor.unsaved}</span>}
             </div>
           )}

@@ -260,7 +260,9 @@ def wrap(draw, text, font, max_width, stroke):
 
 EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF\U0001F900-\U0001F9FF⭐⭕‼⁉™ℹ↔-↙↩↪⌚⌛⌨⏏⏩-⏳⏸-⏺Ⓜ▪▫▶◀◻-◾⤴⤵⬅-⬇⬛⬜〰〽㊗㊙❤❣♥♦♠♣️‍]+")
-EMOJI_FONT_PATHS = ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/System/Library/Fonts/Apple Color Emoji.ttc")
+# bundled first (Noto Color Emoji 2.057, SIL OFL 1.1, assets/fonts/NotoColorEmoji-OFL.txt) so every machine draws the same emoji
+EMOJI_FONT_PATHS = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "fonts", "NotoColorEmoji.ttf"),
+                    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", "/System/Library/Fonts/Apple Color Emoji.ttc")
 
 
 def emoji_font():

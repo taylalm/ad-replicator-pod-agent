@@ -251,6 +251,7 @@ class RenameBody(BaseModel):
     title: str
 
 
+@app.post("/api/jobs/{job_id}/rename")  # POST: the cloud API Gateway does not route PATCH (404 before the app)
 @app.patch("/api/jobs/{job_id}")
 def rename_job(job_id: str, body: RenameBody):
     """Renames a job. Live jobs: job.json and the ModelArk session title (keeping its [job-...] suffix, so a fresh
@@ -368,6 +369,121 @@ def export_captions(job_id: str, body: CaptionDoc):
 @app.get("/api/jobs/{job_id}/captions/export")
 def export_status(job_id: str):
     return CAP.EXPORTS.get(job_id) or {"state": "idle"}
+
+
+# ----------------------------------------------------------------------------- direct generation and drafts
+import generate as GEN  # noqa: E402
+
+
+class GenerateBody(BaseModel):
+    kind: str
+    clip: str
+    prompt: str
+    inputs: List[Dict[str, Any]] = []
+    model: Optional[str] = None
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    audio: bool = True
+    payoff: Optional[str] = None
+
+
+class AcceptBody(BaseModel):
+    file: str
+
+
+class DraftBody(BaseModel):
+    clip: str
+    target: str = "clip"
+    feedback: str
+    model: Optional[str] = None
+    attachments: List[Dict[str, Any]] = []
+
+
+def _writable(job: dict):
+    if job.get("demo") or job.get("frozen") or job.get("example"):
+        raise HTTPException(409, "This example is read-only.")
+
+
+@app.post("/api/jobs/{job_id}/generate")
+def generate_take(job_id: str, body: GenerateBody):
+    d, job, names, final = _editor_context(job_id)
+    _writable(job)
+    derived = derive_job(job, store.read_events(d), store.files_dir(d))
+    remote = _remote_for(job)
+    resolve = lambda n: CAP._local(d, n, remote) if n else None  # noqa: E731
+    products = [p for p in (resolve(Path(str(pr.get("file") or pr.get("image") or "")).name) for pr in derived.get("products", [])) if p]
+    try:
+        return GEN.start(job_id, d, body.model_dump(), resolve, products, _persist_to_session(job))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/api/jobs/{job_id}/generate")
+def generate_status(job_id: str):
+    d, job, _ = _load(job_id)
+    run = GEN.RUNS.get(job_id)
+    return {"run": {k: v for k, v in run.items() if k != "started"} if run else None, "takes": GEN.read_takes(d),
+            "models": {"video": {k: v["label"] for k, v in GEN.VIDEO_MODELS.items()}, "image": {k: v["label"] for k, v in GEN.IMAGE_MODELS.items()}}}
+
+
+@app.post("/api/jobs/{job_id}/takes/accept")
+def accept_take(job_id: str, body: AcceptBody):
+    d, job, _ = _load(job_id)
+    _writable(job)
+    try:
+        take = GEN.accept(d, body.file)
+    except FileNotFoundError:
+        raise HTTPException(404, "take not found")
+    rebuild = None
+    if take.get("kind") == "clip":  # the chosen take goes straight into the ad: rebuild the final with it
+        _, _, names, final = _editor_context(job_id)
+        remote = _remote_for(job)
+        try:
+            rebuild = GEN.rebuild(job_id, d, lambda n: CAP._local(d, n, remote) if n else None, CAP.load_doc(d, names, final),
+                                  _persist_to_session(job), CAP.EXPORTS)
+        except RuntimeError as e:
+            rebuild = {"state": "failed", "error": str(e)}
+    return {"ok": True, "take": take, "rebuild": rebuild}
+
+
+@app.post("/api/jobs/{job_id}/rebuild")
+def rebuild_final(job_id: str):
+    d, job, names, final = _editor_context(job_id)
+    _writable(job)
+    doc = CAP.load_doc(d, names, final)
+    remote = _remote_for(job)
+    try:
+        return GEN.rebuild(job_id, d, lambda n: CAP._local(d, n, remote) if n else None, doc, _persist_to_session(job), CAP.EXPORTS)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.post("/api/jobs/{job_id}/draft")
+def request_draft(job_id: str, body: DraftBody):
+    """Asks the agent to turn short feedback (any language, optional pictures/videos) into a full English prompt and
+    tagged inputs for one clip or still, WITHOUT generating: the draft file appears with the next sync."""
+    d, job, _ = _load(job_id)
+    _writable(job)
+    if not job.get("session_id"):
+        raise HTTPException(409, "This video has no agent session.")
+    clip = re.sub(r"[^A-Za-z0-9_-]", "", body.clip)[:60]
+    target = body.target if body.target in ("still", "clip", "both") else "clip"
+    fb = " ".join(body.feedback.split())[:2000]
+    if not fb:
+        raise HTTPException(422, "Write what should change.")
+    lines = [f"DRAFT: clip {clip} | target: {target} | MODEL: {body.model or 'same as before'} | FEEDBACK: {fb}"]
+    atts = [a for a in body.attachments if str(a.get("path", "")).startswith("/mnt/session/uploads/")]
+    if atts:
+        lines.append("ATTACHMENTS:")
+        lines += [f"- {a['path']} | {' '.join(str(a.get('note', '')).split())[:200]}" for a in atts]
+    try:
+        _client().send_message(job["session_id"], "\n".join(lines))
+    except Exception as e:
+        raise HTTPException(502, f"The agent could not be reached: {str(e)[:300]}")
+    job["status"] = "running"
+    store.write_job(d, job)
+    SYNCER.start(job_id)
+    return {"ok": True, "sent": lines[0]}
 
 
 @app.delete("/api/jobs/{job_id}")

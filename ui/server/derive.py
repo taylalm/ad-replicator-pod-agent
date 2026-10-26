@@ -705,6 +705,15 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
                       "prompt": prompt, "prompt_file": pfile, "references": refs, "duration_s": pc.get("duration"),
                       "mode": pc.get("mode"), "still_prompt": (still.get("prompt") or "")[:6000] or None, "still_references": still_refs,
                       "takes": [{"file": t["name"], "url": url(t["name"]), "mtime": t.get("mtime")} for t in takes[:-1]]})
+    # drafts the agent wrote for the web app (DRAFT message): <clip>_draft_<n>.json, newest last
+    for c in clips:
+        drafts = []
+        for n in sorted((x for x in names if re.match(rf"^{re.escape(c['id'])}(?:_v\d+)?_draft_\d+\.json$", x)),
+                        key=lambda x: int(re.findall(r"_draft_(\d+)", x)[0])):
+            data = read_json(files_dir / n)
+            if isinstance(data, dict):
+                drafts.append({**data, "file": n})
+        c["drafts"] = drafts
     clips.sort(key=lambda c: c["n"])
     clips_meta = read_json(files_dir / "clips.json") if (files_dir / "clips.json").exists() else None
     if isinstance(clips_meta, dict) and isinstance(clips_meta.get("clips"), list):
@@ -729,6 +738,14 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
         final_url = url("final.mp4")
     elif finals:
         final_url = finals[-1]["url"]
+    # versions made in the web app (caption editor, accepted takes): the newest one is what "Your new ad" plays
+    edits = sorted(({"version": int(m.group(1)), "file": f["name"], "url": url(f["name"]),
+                     "thumb": url(f"final_edit_v{m.group(1)}_thumb.jpg") if f"final_edit_v{m.group(1)}_thumb.jpg" in by_name else None,
+                     "clean": url(f"final_edit_v{m.group(1)}_clean.mp4") if f"final_edit_v{m.group(1)}_clean.mp4" in by_name else None}
+                    for f in files if (m := re.match(r"^final_edit_v(\d+)\.mp4$", f["name"]))), key=lambda x: x["version"])
+    agent_final_url = final_url
+    if edits:
+        final_url = edits[-1]["url"]
 
     quality = []
     # gate reports are report_<tag>.json (tag = round_N, final_vN, ...): keep those with scores, oldest first
@@ -785,6 +802,7 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
     keyframes = [url(f["name"]) for f in files if re.match(r"^contact_sheet_\d+\.(jpe?g|png)$", f["name"], re.I)]
     scene_frames = [url(f["name"]) for f in files if re.match(r"^scene_\d+.*\.(jpe?g|png)$", f["name"], re.I)]
     return {"people": people, "products": products, "clips": clips, "finals": finals, "final_url": final_url,
+            "edits": edits, "agent_final_url": agent_final_url,
             "quality": quality, "analysis": analysis_brief, "plan": plan if isinstance(plan, dict) else None,
             "product": product if isinstance(product, dict) else None, "keyframes": keyframes,
             "scene_frames": scene_frames}
@@ -874,6 +892,9 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
             break
     if assets["finals"] and assets["finals"][-1]["frames"]:
         thumbnail = assets["finals"][-1]["frames"][0]
+    thumbs = [e["thumb"] for e in assets.get("edits") or [] if e.get("thumb")]
+    if thumbs:  # the newest version made in the web app
+        thumbnail = thumbs[-1]
     out = {
         **{k: job.get(k) for k in ("id", "title", "created_at", "demo", "session_id", "inputs")},
         "read_only": bool(job.get("demo") or job.get("example") or job.get("frozen")),
