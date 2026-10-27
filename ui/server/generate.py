@@ -226,7 +226,8 @@ def start(job_id: str, d: Path, req: dict, resolve: Callable[[str], Optional[Pat
                           "check": check, "accepted": False, "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
             _write_takes(d, takes)
             state.update(state="done", check=check)
-            for path, mount in ((files / name, f"web_{name}"), (takes_path(d), "web_web_takes.json")):
+            for path, mount in ((files / name, f"web_{name}"), (takes_path(d), "web_web_takes.json"),
+                                (d / "web_paid_calls.json", "web_web_paid_calls.json")):
                 try:
                     persist(path, mount)
                 except Exception as e:
@@ -251,10 +252,35 @@ def accept(d: Path, file: str) -> dict:
     return hit
 
 
+def _duration(path: Path) -> Optional[float]:
+    try:
+        import costs
+        from costs import _read_range_local
+        return costs.mp4_duration(lambda a, b: _read_range_local(path, a, b), path.stat().st_size)
+    except Exception:
+        return None
+
+
+def _payoff(files: Path, web: Dict[str, dict], name: str):
+    """The take's payoff window from its own check (site take record, or the agent's check_<stem>.json)."""
+    if name in web:
+        return (web[name].get("check") or {}).get("payoff_window")
+    try:
+        return json.loads((files / f"check_{Path(name).stem}.json").read_text()).get("payoff_window")
+    except (OSError, ValueError):
+        return None
+
+
+def _shift(t: float, drops) -> float:
+    """A time on the old timeline mapped onto the new one, with the dropped scenes cut out."""
+    return t - sum(min(max(t - a, 0.0), b - a) for a, b in drops)
+
+
 def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], captions_doc: dict,
-            persist: Callable[[Path, str], None], exports: Dict[str, dict]) -> dict:
-    """Re-assembles the agent's edit with accepted web takes in place of their clips, the editor's captions and the
-    client outro: files/final_edit_v<n>.mp4 + _clean.mp4 (the new clean master for the caption editor)."""
+            persist: Callable[[Path, str], None], exports: Dict[str, dict], picks: Optional[Dict[str, dict]] = None) -> dict:
+    """Re-assembles the agent's edit with the chosen take of every scene (picks: {clip: {file, include}}, else the
+    accepted site takes), the editor's captions and the client outro: files/final_edit_v<n>.mp4 + _clean.mp4 (the new
+    clean master for the caption editor). Scenes left out are cut and the captions after them move up."""
     if exports.get(job_id, {}).get("state") == "running":
         raise RuntimeError("an export is already running")
     state = {"state": "running", "started": time.time(), "file": None, "error": None, "warnings": []}
@@ -267,29 +293,47 @@ def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], capt
             if not plans:
                 raise RuntimeError("the agent's edit plan is not available")
             plan = json.loads(plans[-1].read_text())
-            accepted = {t["clip"]: t for t in read_takes(d) if t.get("kind") == "clip" and t.get("accepted")}
-            clips = []
+            web = {t["file"]: t for t in read_takes(d) if t.get("kind") == "clip" and t.get("file")}
+            accepted = {t["clip"]: t for t in web.values() if t.get("accepted")}
+            clips, drops, timeline = [], [], 0.0
             for c in plan.get("clips") or []:
                 c = dict(c)
                 if c.get("path"):
                     stem = Path(c["path"]).stem
                     base = re.sub(r"_v\d+(?:_[a-z0-9-]+)*$", "", stem, flags=re.I)
-                    take = accepted.get(base) or accepted.get(stem)
-                    if take:
-                        win = (take.get("check") or {}).get("payoff_window")
-                        length = float(c.get("end", 0) or 0) - float(c.get("start", 0) or 0) or 2.5
-                        s0 = max(0.0, float(win[0]) - 0.3) if win else 0.0
-                        c.update(path=take["file"], start=round(s0, 2), end=round(s0 + length, 2))
+                    length = float(c.get("end", 0) or 0) - float(c.get("start", 0) or 0)
+                    if length <= 0:
+                        whole = resolve(Path(c["path"]).name)
+                        length = ((_duration(whole) if whole else None) or 3.0) - float(c.get("start", 0) or 0)
+                    pick = (picks or {}).get(base) or (picks or {}).get(stem)
+                    if pick and pick.get("include") is False:  # scene left out: cut it, captions move up
+                        drops.append((timeline, timeline + length))
+                        timeline += length
+                        continue
+                    chosen = (pick or {}).get("file") or (accepted.get(base) or accepted.get(stem) or {}).get("file")
+                    if chosen and chosen != Path(c["path"]).name:
+                        win = _payoff(files, web, chosen)
+                        s0 = max(0.0, float(win[0]) - 0.3) if win else float(c.get("start", 0) or 0)
+                        local_new = resolve(chosen)
+                        dur = _duration(local_new) if local_new else None
+                        if dur:
+                            length = min(length, dur)
+                            s0 = min(s0, max(0.0, dur - length))
+                        c.update(path=chosen, start=round(s0, 2), end=round(s0 + length, 2))
                     local = resolve(Path(c["path"]).name)
                     if not local:
                         raise FileNotFoundError(f"clip not available: {Path(c['path']).name}")
                     c["path"] = str(local)
+                    timeline += length
                 elif c.get("image"):
                     local = resolve(Path(c["image"]).name)
                     if not local:
                         raise FileNotFoundError(f"still not available: {Path(c['image']).name}")
                     c["image"] = str(local)
+                    timeline += float(c.get("duration") or (float(c.get("end", 0) or 0) - float(c.get("start", 0) or 0)) or 0)
                 clips.append(c)
+            if not any(c.get("path") or c.get("image") for c in clips):
+                raise RuntimeError("every scene is left out: keep at least one")
             versions = [int(m.group(1)) for p in files.glob("final_edit_v*.mp4") if (m := re.match(r"final_edit_v(\d+)\.mp4$", p.name))]
             name = f"final_edit_v{1 + max(versions, default=0)}.mp4"
             caps = [{k: c.get(k) for k in ("text", "start", "end", "style", "position", "x", "animation", "approved_wording") if c.get(k) is not None}
@@ -299,6 +343,15 @@ def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], capt
                 img = resolve(str(i.get("image", "")))
                 if i.get("enabled", True) and img:
                     insets.append({**{k: v for k, v in i.items() if k not in ("id", "enabled")}, "image": str(img)})
+            if drops:  # text that sat on a dropped scene goes with it; later text moves up
+                kept = []
+                for item in caps + insets:
+                    a, b = _shift(float(item.get("start", 0)), drops), _shift(float(item.get("end", 0)), drops)
+                    if b - a >= 0.4:
+                        item.update(start=round(a, 2), end=round(b, 2))
+                        kept.append(item)
+                caps = [x for x in kept if x in caps]
+                insets = [x for x in kept if x in insets]
             new = {"output": str(files / name), "clean_output": str(files / name.replace(".mp4", "_clean.mp4")),
                    "size": plan.get("size") or [480, 854], "fps": plan.get("fps") or 24, "clips": clips, "captions": caps, "insets": insets,
                    "reference_captions": plan.get("reference_captions") or [], "keep_clip_audio": True, "avoid_faces": False,
@@ -317,6 +370,16 @@ def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], capt
             doc_file = d / "captions_doc.json"  # the caption editor now works on this cut's clean master
             doc = dict(captions_doc)
             doc["base"] = name.replace(".mp4", "_clean.mp4")
+            if drops:  # the editor's times follow the shorter cut
+                for key in ("captions", "insets"):
+                    moved = []
+                    for it in doc.get(key) or []:
+                        a, b = _shift(float(it.get("start", 0)), drops), _shift(float(it.get("end", 0)), drops)
+                        if b - a >= 0.4:
+                            moved.append({**it, "start": round(a, 2), "end": round(b, 2)})
+                    doc[key] = moved
+                if doc.get("outro_start") is not None:
+                    doc["outro_start"] = round(_shift(float(doc["outro_start"]), drops), 2)
             doc_file.write_text(json.dumps(doc, indent=1, ensure_ascii=False))
             clean = name.replace(".mp4", "_clean.mp4")
             import captions as _cap

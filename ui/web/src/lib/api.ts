@@ -82,7 +82,7 @@ export interface PlanJson {
   end_card?: { product_name?: string; cta?: string; image?: string; price?: string | null };
   disclaimer?: string;
   do_not_copy?: string[];
-  paid_call_estimate?: Partial<Budget>;
+  paid_call_estimate?: Partial<Record<keyof Budget, unknown>>;  // agents write numbers, breakdown objects or text
 }
 export interface AnalysisBrief {
   summary?: string; duration_s?: number; format?: string;
@@ -134,6 +134,20 @@ export interface Job {
   replay?: ReplayInfo;
   syncing?: boolean;
   production?: Production | null;
+  cost?: CostBreakdown | null;
+}
+export type CostPart = "agent_model" | "runtime" | "tools" | "seedance" | "seedream" | "checks";
+/** Time, tokens and cost by workflow step ("example": an example project's own record; "full": everything a project
+ *  used). Amounts are absent when the site hides prices. */
+export interface CostBreakdown {
+  mode: "example" | "selected" | "full";
+  total_usd?: number; runtime_s: number;
+  tokens: { total: number; input: number; cached: number; output: number };
+  requests: number; tool_calls: number; web_search: number; web_fetch: number;
+  parts?: Record<CostPart, number>;
+  counts: { seedance_tasks: number; seedance_tokens: number; seedream_images: number; checks: number };
+  steps: Array<{ n: number; name: string; runtime_s: number; tokens: number; tool_calls: number; usd?: number; parts?: Record<CostPart, number> }>;
+  prices_source?: string; runtime_per_h?: number; web_search_per_call?: number;
 }
 export interface Production {
   production_s: number; steps: Array<{ n: number; active_s: number }>; waiting_s?: number | null;
@@ -146,7 +160,7 @@ export interface Production {
 export interface JobRow {
   id: string; title: string; created_at: string | null; demo: boolean; read_only?: boolean; status: JobStatus; thumbnail: string | null;
   current_step: number | null; product_url?: string; elapsed_s?: number | null; verdict?: string | null; paid_total?: number; error?: string;
-  production_s?: number | null; cost_per_video_usd?: number | null;
+  production_s?: number | null; cost_usd?: number | null; cost_mode?: string | null;
 }
 
 export interface RawEvent {
@@ -155,7 +169,12 @@ export interface RawEvent {
   model_usage?: Record<string, number>; error?: unknown;
 }
 
-export interface ValidateResult { ok: boolean; reason: string | null; content_type: string | null; size_bytes: number | null; status?: number | null }
+export interface ValidateResult { ok: boolean; reason: string | null; content_type: string | null; size_bytes: number | null; status?: number | null; social?: string }
+/** A sample video the site downloads from a social link (POST /api/sample-link, then poll). */
+export interface SampleLink {
+  id: string; state: "starting" | "reading" | "downloading" | "converting" | "uploading" | "done" | "failed"; progress: number; platform: string;
+  url: string; title: string | null; duration: number | null; size: number | null; ref: (Reference & { source_url?: string }) | null; error: string | null;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -227,8 +246,10 @@ export const api = {
     request<{ events: RawEvent[]; total: number; next: number; has_more: boolean }>(
       `/api/jobs/${encodeURIComponent(id)}/events?after=${after}${replayT != null ? `&replay_t=${replayT}` : ""}`),
   validateSample: (url: string) => request<ValidateResult>("/api/validate-sample", { method: "POST", body: JSON.stringify({ url }) }),
+  sampleLink: (url: string) => request<SampleLink>("/api/sample-link", { method: "POST", body: JSON.stringify({ url }) }),
+  sampleLinkStatus: (id: string) => request<SampleLink>(`/api/sample-link/${encodeURIComponent(id)}`),
   createJob: (body: {
-    title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string } | null; product_url: string; requirements: string; budget: Budget;
+    title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string; source_url?: string } | null; product_url: string; requirements: string; budget: Budget;
     options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none"; video_model?: string; image_model?: string }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
   }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
@@ -248,7 +269,7 @@ export type CaptionDoc = {
   version: number; size: [number, number]; fps: number; base: string | null; captions: CaptionItem[]; insets: InsetItem[];
   reference_captions: string[]; outro_start: number | null; styles?: string[]; animations_in?: string[]; animations_out?: string[];
 };
-export type ExportState = { state: "idle" | "running" | "done" | "failed"; file?: string | null; error?: string | null; warnings?: string[] };
+export type ExportState = { state: "idle" | "running" | "done" | "failed" | "sent_to_agent"; file?: string | null; error?: string | null; warnings?: string[] };
 
 export const captionsApi = {
   get: (id: string) => request<{ doc: CaptionDoc; base_url: string | null; edits: { name: string; url: string }[]; export: ExportState | null; read_only: boolean }>(
@@ -281,6 +302,17 @@ export const genApi = {
   rebuild: (id: string) => request<ExportState>(`/api/jobs/${encodeURIComponent(id)}/rebuild`, { method: "POST" }),
   draft: (id: string, body: { clip: string; target: string; feedback: string; model?: string; attachments: { path: string; note?: string }[] }) =>
     request<{ ok: boolean; sent: string }>(`/api/jobs/${encodeURIComponent(id)}/draft`, { method: "POST", body: JSON.stringify(body) }),
+};
+
+/** One scene of the ad with every take that can fill it (scene picker). */
+export interface SceneTake { file: string; url: string; source: "agent" | "site"; label: string; current: boolean; verdict?: string | null; summary?: string | null; model?: string | null }
+export interface SceneRow { id: string; n: number; takes: SceneTake[]; chosen: string; include: boolean; in_cut: string }
+export type ScenePick = { file: string; include: boolean };
+export const scenesApi = {
+  get: (id: string) => request<{ scenes: SceneRow[]; assembled: boolean; export: ExportState | null }>(`/api/jobs/${encodeURIComponent(id)}/scenes`),
+  set: (id: string, picks: Record<string, ScenePick>, apply: boolean) =>
+    request<ExportState & { ok?: boolean; state: ExportState["state"] | "saved" | "unchanged" }>(`/api/jobs/${encodeURIComponent(id)}/scenes`,
+      { method: "POST", body: JSON.stringify({ picks, apply }) }),
 };
 
 export function fileUrl(localUrl: string | null | undefined): string {

@@ -5,9 +5,10 @@ counting only the periods the session was running (session.status_running -> sta
 (approvals, reviews) and later regenerations/revisions are left out, so the number shows what one video takes.
 
 Cost: unit prices from the official ModelArk pricing page (PRICES below, with the source and the date read).
-- Seedance 2.5: the task's own usage.completion_tokens (GET /contents/generations/tasks/{id}, cached by sync.py in
-  cost_cache.json) x the per-million-token price for its resolution; without that record, the page's estimate
-  formula (duration x width x height x fps / 1024).
+- Seedance: the task's own usage.completion_tokens (GET /contents/generations/tasks/{id}, cached by sync.py in
+  cost_cache.json) x the per-million-token price for its model and resolution; without that record, the page's estimate
+  formula (duration x width x height x fps / 1024). A task with a video input (edit/extend/reference video) is priced
+  from the "Input with video" table; see video_input().
 - Seedream 5.0 pro: per output image, tier by output pixels (<= 2.61 MP / above), size read from the paid-call note.
 - Agent model and evaluator: tokens x per-million prices. The session's model_usage reports input_tokens INCLUDING the
   cached part (cache_read_input_tokens <= input_tokens, equal on fully cached requests), so uncached = input - cached.
@@ -32,7 +33,8 @@ def _load_prices() -> dict:
             "seedance_with_video_per_m": {"480p": 0, "720p": 0, "1080p": 0}, "seedream_image_small": 0, "seedream_image_large": 0,
             "seedream_tier_pixels": 2_610_000, "agent_input_per_m": 0, "agent_cached_per_m": 0, "agent_output_per_m": 0,
             "evaluator_input_per_m": 0, "evaluator_output_per_m": 0, "evaluator_call_estimate": 0}
-    zero.update({"seedance_per_m_by_model": {}, "seedream_flash_image": 0})
+    zero.update({"seedance_per_m_by_model": {}, "seedance_with_video_per_m_by_model": {}, "seedream_flash_image": 0,
+                 "agent_runtime_per_h": 0, "web_search_per_call": 0, "web_fetch_per_call": 0})
     return zero
 
 
@@ -59,6 +61,44 @@ def _seedance_model(rec_model: str, logged: str) -> str:
             return SEEDANCE_ID[cand]
     return SEEDANCE_ID["2.5"]
 SEEDANCE_DIMS = {"480p": (480, 864), "720p": (720, 1280), "1080p": (1080, 1920)}
+VIDEO_INPUT_RATIO = 1.3  # billed tokens above this multiple of the output-only estimate mean a video went in
+
+
+def task_inputs(files_dir: Path) -> Dict[str, dict]:
+    """Task id -> recorded inputs (batch.py keeps them in tasks.json since generate-with-seedance v5)."""
+    try:
+        raw = json.loads((files_dir / "tasks.json").read_text())
+    except (ValueError, OSError):
+        return {}
+    tasks = raw.get("tasks", raw) if isinstance(raw, dict) else {}
+    return {v["task_id"]: v.get("inputs") or {} for v in tasks.values() if isinstance(v, dict) and v.get("task_id")}
+
+
+def video_input(rec: dict, call: Optional[dict] = None, inputs: Optional[dict] = None) -> bool:
+    """True when a Seedance task had a video input. The task record does not list its inputs, so: an explicit record
+    (the web app's video_input field, batch.py's recorded --reference-video), else the billed tokens. The pricing page
+    bills (input video duration + output duration) x width x height x fps / 1024, so a task billed well above its own
+    output-only estimate had a video in. A short video in front of a long output can stay under the threshold and be
+    priced at the higher no-video rate (an overestimate, never an underestimate)."""
+    if call and isinstance(call.get("video_input"), bool):
+        return call["video_input"]
+    if inputs and inputs.get("videos"):
+        return True
+    tokens = (rec.get("usage") or {}).get("completion_tokens")
+    dur = rec.get("duration")
+    if not tokens or not dur:
+        return False
+    w, h = SEEDANCE_DIMS.get(rec.get("resolution") or "480p", (480, 864))
+    return tokens > VIDEO_INPUT_RATIO * dur * w * h * (rec.get("framespersecond") or 24) / 1024
+
+
+def seedance_price_per_m(model_id: str, res: str, with_video: bool) -> float:
+    """List price per 1M tokens for a Seedance model, resolution and input kind."""
+    if with_video:
+        table = (PRICES.get("seedance_with_video_per_m_by_model") or {}).get(model_id) or PRICES["seedance_with_video_per_m"]
+    else:
+        table = (PRICES.get("seedance_per_m_by_model") or {}).get(model_id) or PRICES["seedance_per_m"]
+    return table.get(res, table.get("480p", 0))
 STEP_RE = re.compile(r"STEP\s+(\d+)\s*/\s*(\d+)\s*:\s*([^\n]+?)\s+-\s+(started|done|failed|skipped)\b", re.I)
 
 
@@ -73,10 +113,11 @@ def _ts(s: Optional[str]) -> Optional[float]:
 
 
 def _text(e: dict) -> str:
+    from steplines import normalize
     c = e.get("content")
     if isinstance(c, list):
-        return "".join(x.get("text", "") for x in c if isinstance(x, dict))
-    return str(c or e.get("text") or "")
+        return normalize("".join(x.get("text", "") for x in c if isinstance(x, dict)))
+    return normalize(str(c or e.get("text") or ""))
 
 
 def running_intervals(events: List[dict]) -> List[Tuple[float, float]]:
@@ -255,6 +296,7 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
          "seedream": {"images_small": 0, "images_large": 0, "usd": 0.0},
          "evaluator_gate": {"calls": 0, "usd": 0.0}, "evaluator_clip_checks": {"calls": 0, "usd": 0.0}}
     starts = _step_starts(events)
+    inputs_by_task = task_inputs(files_dir)
     by_step: Dict[int, Dict[str, float]] = {}
 
     def add_step(n, key, usd):
@@ -281,10 +323,11 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
                 w, h = SEEDANCE_DIMS.get(res, (480, 864))
                 tokens = dur * w * h * (rec.get("framespersecond") or 24) / 1024
             model_id = _seedance_model(rec.get("model"), c.get("model"))
-            table = (PRICES.get("seedance_per_m_by_model") or {}).get(model_id) or PRICES["seedance_per_m"]
-            price = table.get(res, table.get("480p", 0)) * tokens / 1e6
-            per = mu["seedance"].setdefault("by_model", {}).setdefault(model_id, {"tasks": 0, "tokens": 0, "usd": 0.0})
+            with_video = video_input(rec, c, inputs_by_task.get(cid))
+            price = seedance_price_per_m(model_id, res, with_video) * tokens / 1e6
+            per = mu["seedance"].setdefault("by_model", {}).setdefault(model_id, {"tasks": 0, "tokens": 0, "usd": 0.0, "video_tasks": 0})
             per["tasks"] += 1
+            per["video_tasks"] = per.get("video_tasks", 0) + int(with_video)
             per["tokens"] += int(tokens)
             per["usd"] += price
             seedance_tokens += int(tokens)
@@ -354,12 +397,16 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
     video = []
     for name in delivered_clips(files_dir):
         tid = cj.get(name)
-        tok = ((cache.get(tid) or {}).get("usage") or {}).get("completion_tokens") if tid else None
+        rec = (cache.get(tid) or {}) if tid else {}
+        tok = (rec.get("usage") or {}).get("completion_tokens")
+        rate = seedance_price_per_m(_seedance_model(rec.get("model"), ""), rec.get("resolution") or "480p",
+                                    video_input(rec, None, inputs_by_task.get(tid)))
         how = "task record"
         if not tok:
             dur = durations.get(name) or 5
             tok, how = dur * tps, f"{dur:.1f} s x measured tokens/s"
-        video.append({"clip": name, "tokens": int(tok), "usd": round(tok * PRICES["seedance_per_m"]["480p"] / 1e6, 3), "how": how})
+            rate = seedance_price_per_m(SEEDANCE_ID["2.5"], "480p", False)
+        video.append({"clip": name, "tokens": int(tok), "usd": round(tok * rate / 1e6, 3), "how": how})
     per_video = {"seedance": round(sum(v["usd"] for v in video), 3), "seedream": round(b["seedream"]["first_pass"], 3),
                  "agent": round(b["agent"]["first_pass"], 3),
                  "evaluator": round(max(b["evaluator"]["first_pass"], PRICES["evaluator_call_estimate"] * (len(video) + 1)), 3)}
@@ -380,6 +427,177 @@ def compute(job_dir: Path, files_dir: Path, events: List[dict]) -> Dict[str, Any
     }
 
 
+
+# ----------------------------------------------------------------------------- breakdown by step (Managed Agents billing)
+# Managed Agents fee = model invocation (tokens) + agent runtime (only while the session status is running, per second)
+# + tool calls (web_search per request, web_fetch free for now): docs.byteplus.com/en/docs/modelark/model-pricing.
+# Seedance, Seedream and the evaluator are separate model API calls, added so the page shows what one ad costs.
+STEP_NAMES = {1: "Analyze the sample", 2: "Read the product page", 3: "Plan", 4: "AI people", 5: "Personalize the product",
+              6: "Prompts and first frames", 7: "Clips", 8: "Assemble", 9: "Quality check", 10: "Retries", 11: "Deliver",
+              99: "Regenerations on this site"}
+MENTION_RE = re.compile(r"STEP\s+(\d+)(?:\s*/\s*11)?", re.I)
+PARTS = ("agent_model", "runtime", "tools", "seedance", "seedream", "checks")
+
+
+def step_markers(events: List[dict], first_clip_t: Optional[float] = None) -> List[Tuple[float, int]]:
+    """(time, step in progress from then on). 'n - started' sets n (rework may go back), 'n - done' moves to n+1, a loose
+    'STEP n' mention only moves forward. Agents that skip the step-7 line: step 7 starts at the first Seedance task."""
+    out, cur = [], 0
+    for e in events:
+        if e.get("type") != "agent.message":
+            continue
+        t, txt = _ts(e.get("processed_at")), _text(e)
+        if t is None:
+            continue
+        nxt = cur
+        for m in STEP_RE.finditer(txt):
+            n, kind = int(m.group(1)), m.group(4).lower()
+            nxt = n + 1 if kind in ("done", "skipped") else n
+        loose = [int(m.group(1)) for m in MENTION_RE.finditer(txt) if 1 <= int(m.group(1)) <= 11]
+        if loose and max(loose) > nxt and not STEP_RE.search(txt):
+            nxt = max(loose)
+        if first_clip_t and cur < 7 < nxt and t > first_clip_t:
+            out.append((first_clip_t, 7))
+        if nxt != cur:
+            out.append((t, nxt))
+            cur = nxt
+    return sorted(out)
+
+
+def _bucket(n: int) -> int:
+    return 99 if n == 99 else min(11, max(1, int(n or 1)))
+
+
+def breakdown(job_dir: Path, files_dir: Path, events: List[dict], spans: Optional[List[Tuple[Optional[float], Optional[float]]]] = None,
+              skip=None, first_checks: Optional[int] = None) -> Dict[str, Any]:
+    """Time, tokens and list-price cost per workflow step.
+
+    Default ("full"): everything the job used, including regenerations made on this site.
+    spans: count only these (start, end) periods of the log (None = open end). skip(call) -> True leaves a paid call out;
+    first_checks keeps only the first N clip checks of step 7."""
+    lo_hi = [(a if a is not None else float("-inf"), b if b is not None else float("inf")) for a, b in (spans or [(None, None)])]
+    inside = lambda t: t is not None and any(a <= t <= b + 1 for a, b in lo_hi)
+    whole_start = len(lo_hi) == 1 and lo_hi[0][0] == float("-inf")  # calls without a time count only when nothing is cut out
+    cache_path = job_dir / "cost_cache.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    rec_t = lambda r: r.get("created_at") if isinstance(r.get("created_at"), (int, float)) else _ts(r.get("created_at"))
+    sd_times = sorted(t for t in (rec_t(r) for r in cache.values() if isinstance(r, dict) and r.get("usage")) if t and inside(t))
+    marks = step_markers(events, sd_times[0] if sd_times else None)
+    at = lambda t: _bucket(_step_at(marks, t))
+    run_iv = running_intervals(events)
+    steps: Dict[int, Dict[str, float]] = {}
+
+    def row(n):
+        return steps.setdefault(_bucket(n), {"runtime_s": 0.0, "tokens": 0, "input": 0, "cached": 0, "output": 0, "requests": 0, "tool_calls": 0,
+                                             "web_search": 0, "web_fetch": 0, **{k: 0.0 for k in PARTS}})
+    # runtime per step: the session's running time, cut at the step boundaries
+    times = [_ts(e.get("processed_at")) for e in events]
+    times = [t for t in times if t is not None]
+    if times:
+        cuts = sorted({times[0], times[-1], *[t for t, _ in marks]})
+        for a, b in zip(cuts, cuts[1:]):
+            for wa, wb in lo_hi:
+                lo, hi = max(a, wa), min(b, wb)
+                if hi > lo:
+                    secs = _overlap((lo, hi), run_iv)
+                    r = row(at(a + 0.001))
+                    r["runtime_s"] += secs
+                    r["runtime"] += secs / 3600 * PRICES.get("agent_runtime_per_h", 0)
+    for e in events:
+        t = _ts(e.get("processed_at"))
+        if not inside(t):
+            continue
+        if e.get("type") == "span.model_request_end" and isinstance(e.get("model_usage"), dict):
+            u = e["model_usage"]
+            cached = u.get("cache_read_input_tokens") or 0
+            unc, out = max(0, (u.get("input_tokens") or 0) - cached), u.get("output_tokens") or 0
+            r = row(at(t))
+            r["requests"] += 1
+            r["input"] += unc
+            r["cached"] += cached
+            r["output"] += out
+            r["tokens"] += unc + cached + out
+            r["agent_model"] += (unc * PRICES["agent_input_per_m"] + cached * PRICES["agent_cached_per_m"] + out * PRICES["agent_output_per_m"]) / 1e6
+        elif e.get("type") == "agent.tool_use":
+            r = row(at(t))
+            r["tool_calls"] += 1
+            if e.get("name") in ("web_search", "web_fetch"):
+                r[e["name"]] += 1
+                r["tools"] += PRICES.get(f"{e['name']}_per_call", 0)
+    from derive import read_paid_calls
+    inputs_by_task = task_inputs(files_dir)
+    n_checks = 0
+    counts = {"seedance_tasks": 0, "seedance_tokens": 0, "seedream_images": 0, "checks": 0}
+    calls = [(c, False) for c in read_paid_calls(files_dir / "paid_calls.json")]
+    if spans is None and skip is None:
+        try:
+            calls += [(c, True) for c in json.loads((job_dir / "web_paid_calls.json").read_text())]
+        except (OSError, ValueError):
+            pass
+    for c, web in calls:
+        if not isinstance(c, dict):
+            continue
+        kind, cid, note = str(c.get("kind", "")).lower(), str(c.get("id") or c.get("task_id") or ""), str(c.get("note", ""))
+        rec = cache.get(cid) or {}
+        status = str(rec.get("status") or c.get("status") or ("succeeded" if web else "")).lower()
+        if kind in ("clip_check", "still_check"):
+            status = "succeeded"  # a check is billed whatever its verdict
+        if status not in ("succeeded", "success", "ok", "done"):
+            continue  # failed or refused submissions are not billed
+        t = rec_t(rec) if kind == "seedance" and rec else (_first_mention(events, cid) if cid and not web else None)
+        if skip is not None:
+            if skip(c):
+                continue
+            if kind == "clip_check" and str(c.get("step")) == "7":
+                n_checks += 1
+                if first_checks is not None and n_checks > first_checks:
+                    continue
+        elif spans is not None and ((t is None and not whole_start) or (t is not None and not inside(t))):
+            continue
+        try:
+            n = 99 if web else (int(c.get("step") or 0) or _step_at(marks, t or 0))
+        except (TypeError, ValueError):
+            n = _step_at(marks, t or 0)
+        r = row(n)
+        if kind == "seedance":
+            res = rec.get("resolution") or c.get("resolution") or "480p"
+            tokens = (rec.get("usage") or {}).get("completion_tokens") or c.get("completion_tokens")
+            if not tokens:
+                dur = rec.get("duration") or (int(m.group(1)) if (m := re.search(r"(\d+)\s*s\b", note)) else 5)
+                w, h = SEEDANCE_DIMS.get(res, (480, 864))
+                tokens = dur * w * h * (rec.get("framespersecond") or 24) / 1024
+            model_id = _seedance_model(rec.get("model"), c.get("model"))
+            r["seedance"] += seedance_price_per_m(model_id, res, video_input(rec, c, inputs_by_task.get(cid))) * tokens / 1e6
+            counts["seedance_tasks"] += 1
+            counts["seedance_tokens"] += int(tokens)
+        elif kind == "seedream":
+            k = int(c.get("images") or 1)
+            flash = "flash" in (str(c.get("model") or "") + note).lower()
+            size = str(c.get("size") or note)
+            r["seedream"] += k * (PRICES.get("seedream_flash_image", 0) if flash else _seedream_price(size))
+            counts["seedream_images"] += k
+        elif kind in ("evaluator", "clip_check", "still_check"):
+            r["checks"] += PRICES["evaluator_call_estimate"]
+            counts["checks"] += 1
+    rows = []
+    for n in sorted(steps):
+        r = steps[n]
+        usd = sum(r[k] for k in PARTS)
+        if r["runtime_s"] < 1 and usd < 0.0005 and not r["tokens"]:
+            continue
+        rows.append({"n": n, "name": STEP_NAMES.get(n, f"Step {n}"), "runtime_s": round(r["runtime_s"]), "tokens": int(r["tokens"]),
+                     "tool_calls": int(r["tool_calls"]), "usd": round(usd, 4), "parts": {k: round(r[k], 4) for k in PARTS}})
+    tot = {k: sum(steps[n][k] for n in steps) for k in ("runtime_s", "tokens", "input", "cached", "output", "requests", "tool_calls", "web_search", "web_fetch", *PARTS)}
+    return {
+        "mode": "selected" if skip is not None else "full",
+        "total_usd": round(sum(tot[k] for k in PARTS), 2), "runtime_s": round(tot["runtime_s"]),
+        "tokens": {"total": int(tot["tokens"]), "input": int(tot["input"]), "cached": int(tot["cached"]), "output": int(tot["output"])},
+        "requests": int(tot["requests"]), "tool_calls": int(tot["tool_calls"]), "web_search": int(tot["web_search"]), "web_fetch": int(tot["web_fetch"]),
+        "parts": {k: round(tot[k], 4) for k in PARTS}, "counts": counts, "steps": rows,
+        "prices_source": PRICES.get("source"), "runtime_per_h": PRICES.get("agent_runtime_per_h", 0),
+        "web_search_per_call": PRICES.get("web_search_per_call", 0),
+    }
+
 def _model_rows(m: Dict[str, Any]) -> List[Dict[str, Any]]:
     """One row per model for the internal cost view: what was used, at which list price, and the USD amount."""
     a, sd, sr, eg, ec = m["agent"], m["seedance"], m["seedream"], m["evaluator_gate"], m["evaluator_clip_checks"]
@@ -388,8 +606,8 @@ def _model_rows(m: Dict[str, Any]) -> List[Dict[str, Any]]:
          "usage": f"{a['input_tokens']:,} input + {a['cached_tokens']:,} cached input + {a['output_tokens']:,} output tokens ({a['requests']} requests)",
          "unit_price": f"${PRICES['agent_input_per_m']} / ${PRICES['agent_cached_per_m']} / ${PRICES['agent_output_per_m']} per 1M tokens", "usd": round(a["usd"], 3)},
         *[{"model": f"Seedance {ver} (video)", "id": mid,
-           "usage": f"{row['tasks']} tasks, {row['tokens']:,} tokens",
-           "unit_price": f"${((PRICES.get('seedance_per_m_by_model') or {}).get(mid) or PRICES['seedance_per_m']).get('480p')} per 1M tokens (480p/720p)",
+           "usage": f"{row['tasks']} tasks ({row.get('video_tasks', 0)} with video input), {row['tokens']:,} tokens",
+           "unit_price": f"${seedance_price_per_m(mid, '480p', False)} per 1M tokens (480p/720p), ${seedance_price_per_m(mid, '480p', True)} with video input",
            "usd": round(row["usd"], 3)}
           for mid, row in (sd.get("by_model") or {}).items() for ver in [next((v for v, i in SEEDANCE_ID.items() if i == mid), mid)]],
         {"model": "Seedream 5.0 (images)", "id": "dola-seedream-5-0-pro-260628 / dola-seedream-5-0-flash-260915",

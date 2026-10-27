@@ -3,6 +3,7 @@
 import { AtSign, Check, ChevronDown, Download, ImagePlus, Loader2, Plus, RotateCcw, X } from "lucide-react";
 import { DownloadButton } from "@/components/download-button";
 import { ClipStudio, useGen, type GenStatus } from "@/components/clip-studio";
+import { ScenePicker } from "@/components/scene-picker";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -278,24 +279,20 @@ export function ClipWorkbench({ job, onSend, onUpdated }: { job: Job; onSend: (t
       }
     }, 3000);
   };
-  const doRebuild = async () => {
-    try { watch(await genApi.rebuild(job.id)); }
-    catch (e) { setRebuild({ state: "failed", error: e instanceof Error ? e.message : String(e) }); }
-  };
   if (!job.clips.length) return null;
   return (
     <section aria-labelledby="clip-workbench">
       <h2 id="clip-workbench" className="mb-1 font-display text-xl font-medium">{s.clips.title} <span className="text-base font-normal text-muted-foreground">· {job.clips.length}</span></h2>
       <p className="mb-3 text-sm text-muted-foreground">{s.clips.hint}</p>
-      {(accepted > 0 || rebuild?.state === "running") && !job.demo ? (
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl bg-brand-soft px-3 py-2 text-sm">
-          <span>{s.studio.acceptedCount(accepted)}</span>
-          <Button size="sm" className="rounded-full" onClick={doRebuild} disabled={rebuild?.state === "running"}>
-            {rebuild?.state === "running" ? <Loader2 className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />}{rebuild?.state === "running" ? s.studio.rebuilding : s.studio.rebuild}
-          </Button>
-          {rebuild?.state === "done" && rebuild.file ? <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${rebuild.file}`} name={rebuild.file} label={rebuild.file} /> : null}
-          {rebuild?.state === "failed" ? <span className="text-destructive">{rebuild.error}</span> : null}
-        </div>
+      <ScenePicker job={job} onUpdated={onUpdated}
+        refreshKey={`${(gen?.takes ?? []).map((x) => `${x.file}:${x.accepted ? 1 : 0}`).join(",")}|${rebuild?.state ?? ""}|${job.clips.map((c) => `${c.file}:${c.takes?.length ?? 0}`).join(",")}`} />
+      {rebuild && rebuild.state !== "idle" && !job.demo ? (
+        <p className="mb-3 flex flex-wrap items-center gap-2 rounded-xl bg-brand-soft px-3 py-2 text-sm" aria-live="polite">
+          {rebuild.state === "running" && <><Loader2 className="size-3.5 animate-spin" />{s.studio.rebuilding}</>}
+          {rebuild.state === "sent_to_agent" && s.studio.takenByAgent(accepted || 1)}
+          {rebuild.state === "done" && rebuild.file ? <DownloadButton url={`/api/jobs/${encodeURIComponent(job.id)}/files/${rebuild.file}`} name={rebuild.file} label={rebuild.file} /> : null}
+          {rebuild.state === "failed" ? <span className="text-destructive">{rebuild.error}</span> : null}
+        </p>
       ) : null}
       <div className="space-y-3">
         {job.clips.map((c, i) => <ClipCard key={`${c.id}-${c.file}-${c.takes?.length ?? 0}`} job={job} clip={c} index={i} gen={gen} refresh={refresh} onRebuild={watch} />)}

@@ -126,13 +126,30 @@ def restore_web_files(client, job: dict, d: Path) -> List[str]:
         return []
     _WEB_CHECKED.add(job.get("id"))
     got = []
+    import webfiles
     try:
-        for r in client.get_session(job["session_id"]).get("resources") or []:
+        resources = client.get_session(job["session_id"]).get("resources") or []
+        newest = {}  # packed JSON records: the latest version of each
+        for r in resources:
+            pk = webfiles.parse(Path(str(r.get("mount_path") or "")).name) if r.get("type") == "file" else None
+            if pk and pk[1] > newest.get(pk[0], (0, None))[0]:
+                newest[pk[0]] = (pk[1], r)
+        for name, (_, r) in newest.items():
+            dest = d / name if name in ("captions_doc.json", "web_takes.json", "web_paid_calls.json", "web_scene_picks.json") else store.files_dir(d) / name
+            if dest.exists():
+                continue
+            url = (client.get(f"/files/{r['file_id']}") or {}).get("download_url")
+            if url:
+                with urllib.request.urlopen(url, timeout=120) as resp:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(webfiles.unpack(resp.read()))
+                got.append(name)
+        for r in resources:
             mount = str(r.get("mount_path") or "")
-            if r.get("type") != "file" or not mount.startswith("/mnt/session/uploads/web_"):
+            if r.get("type") != "file" or not mount.startswith("/mnt/session/uploads/web_") or webfiles.parse(Path(mount).name):
                 continue
             name = Path(mount).name[len("web_"):]
-            dest = d / name if name in ("captions_doc.json", "web_takes.json") else store.files_dir(d) / name
+            dest = d / name if name in ("captions_doc.json", "web_takes.json", "web_paid_calls.json", "web_scene_picks.json") else store.files_dir(d) / name
             if dest.exists():
                 continue
             url = (client.get(f"/files/{r['file_id']}") or {}).get("download_url")
@@ -263,11 +280,15 @@ class JobSyncer:
             job["files_index"] = index
             restore_sample(self.client(), job, store.files_dir(d))
             restore_web_files(self.client(), job, d)
-            if new or saved or not (d / "costs.json").exists():
+            web_paid = d / "web_paid_calls.json"  # a regeneration made on the site changes the cost too
+            stale = web_paid.exists() and (d / "costs.json").exists() and web_paid.stat().st_mtime > (d / "costs.json").stat().st_mtime
+            if new or saved or stale or not (d / "costs.json").exists():
                 try:  # production time and cost of one video (official list prices), see costs.py
                     import costs
                     costs.fetch_seedance_usage(self.client(), d, store.files_dir(d))
-                    (d / "costs.json").write_text(json.dumps(costs.compute(d, store.files_dir(d), events), indent=1))
+                    data = costs.compute(d, store.files_dir(d), events)
+                    data["breakdown"] = costs.breakdown(d, store.files_dir(d), events)
+                    (d / "costs.json").write_text(json.dumps(data, indent=1))
                 except Exception as e:
                     log(f"{job_id}: costs: {type(e).__name__}: {str(e)[:160]}")
             if self._auto_resume(job, events):

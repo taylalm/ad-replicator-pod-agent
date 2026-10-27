@@ -39,7 +39,7 @@ export function JobCard({ job, index = 0, onDeleted, onRenamed }: {
           {onRenamed && !job.demo && <EditableRename job={job} onRenamed={onRenamed} />}
         </h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          {fmtDate(job.created_at)}{job.product_url ? ` · ${hostOf(job.product_url)}` : ""}{job.production_s ? ` · ${s.history.production(fmtDuration(job.production_s))}` : ""}{job.cost_per_video_usd != null ? ` · ${s.history.costPerVideo(`$${job.cost_per_video_usd.toFixed(2)}`)}` : ""}
+          {fmtDate(job.created_at)}{job.product_url ? ` · ${hostOf(job.product_url)}` : ""}{job.production_s ? ` · ${s.history.production(fmtDuration(job.production_s))}` : ""}{job.cost_usd != null ? ` · ${s.history.cost(`$${job.cost_usd.toFixed(2)}`)}` : ""}
         </p>
         {job.current_step != null && job.status !== "done" && <p className="mt-1 text-sm text-muted-foreground">{s.live.stepOf(job.current_step)}{s.steps.names[job.current_step] ? ` · ${s.steps.names[job.current_step]}` : ""}</p>}
         {job.error && <p className="mt-1 text-xs text-danger">{job.error}</p>}

@@ -10,14 +10,27 @@ from typing import Optional
 
 SOCIAL = {
     "tiktok.com": "TikTok", "vm.tiktok.com": "TikTok", "instagram.com": "Instagram", "youtube.com": "YouTube",
-    "youtu.be": "YouTube", "facebook.com": "Facebook", "fb.watch": "Facebook", "x.com": "X", "twitter.com": "X",
+    "youtu.be": "YouTube", "facebook.com": "Facebook", "fb.watch": "Facebook", "fb.com": "Facebook", "x.com": "X", "twitter.com": "X",
 }
+UPLOAD_ONLY = {"TikTok"}  # tested 26 Oct 2026: HTTP 403 from the veFaaS function, fine from a home connection
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm")
 
 
 def _host_matches(host: str, pattern: str) -> bool:
     return host == pattern or host.endswith("." + pattern)
+
+
+def social_platform(url: str) -> Optional[str]:
+    """'TikTok', 'YouTube', ... when the link is a post on a social site (the web server downloads those), else None."""
+    try:
+        p = urllib.parse.urlparse((url or "").strip())
+    except ValueError:
+        return None
+    host = (p.hostname or "").lower()
+    if p.scheme not in ("http", "https"):
+        return None
+    return next((label for pat, label in SOCIAL.items() if _host_matches(host, pat)), None)
 
 
 def validate_sample(url: str, timeout: float = 10.0) -> dict:
@@ -32,11 +45,14 @@ def validate_sample(url: str, timeout: float = 10.0) -> dict:
         out["reason"] = "This does not look like a web link."
         return out
     host = (p.hostname or "").lower()
-    for pat, label in SOCIAL.items():
-        if _host_matches(host, pat):
-            out["reason"] = (f"This is a {label} page link. The agent cannot download videos from {label}. "
-                             "Paste a direct link to the MP4 file instead (for example a file hosted on your storage bucket).")
-            return out
+    label = social_platform(url)
+    if label in UPLOAD_ONLY:  # the site refuses these from the cloud (TikTok answers 403 to datacenter addresses)
+        out["reason"] = (f"{label} does not allow our server to download its videos. Save the video from {label} "
+                         "(Save video / Download) and upload the MP4 file instead.")
+        return out
+    if label:  # the site downloads it (social.py); the agent gets the file, never the link
+        out.update(ok=True, social=label)
+        return out
     if p.scheme != "https":
         out["reason"] = "The link must start with https:// (plain http links cannot be fetched by the agent)."
         return out

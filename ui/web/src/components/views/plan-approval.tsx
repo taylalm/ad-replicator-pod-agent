@@ -54,50 +54,50 @@ export function PlanApproval({ job, onSend, replay }: { job: Job; onSend: (text:
 
         {plan && !job.plan_text && (
           <section className="grid gap-4 sm:grid-cols-2" aria-label="Plan details">
-            {plan.cast && plan.cast.length > 0 && (
+            {Array.isArray(plan.cast) && plan.cast.length > 0 && (
               <Card title={s.plan.people} icon={<Users className="size-4" aria-hidden />}>
                 <ul className="space-y-2">
                   {plan.cast.map((c) => (
-                    <li key={c.name} className="text-sm"><span className="font-semibold">{c.name}</span>{c.role ? ` · ${c.role}` : ""}{c.look ? <span className="block text-muted-foreground">{c.look}</span> : null}</li>
+                    <li key={asText(c.name)} className="text-sm"><span className="font-semibold">{asText(c.name)}</span>{c.role ? ` · ${asText(c.role)}` : ""}{c.look ? <span className="block text-muted-foreground">{asText(c.look)}</span> : null}</li>
                   ))}
                 </ul>
               </Card>
             )}
-            {plan.product_options && (
+            {plan.product_options && typeof plan.product_options === "object" && (
               <Card title={s.plan.productOptions}>
                 <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                   {Object.entries(plan.product_options).map(([k, v]) => (
-                    <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd className="font-medium">{v}</dd></div>
+                    <div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd className="font-medium">{asText(v)}</dd></div>
                   ))}
                 </dl>
               </Card>
             )}
-            {plan.scenes && plan.scenes.length > 0 && (
+            {Array.isArray(plan.scenes) && plan.scenes.length > 0 && (
               <Card title={s.plan.scenes} className="sm:col-span-2">
                 <ol className="divide-y divide-border">
                   {plan.scenes.map((sc) => (
                     <li key={sc.index} className="grid grid-cols-[2rem_1fr_auto] gap-3 py-2 text-sm">
                       <span className="font-display text-lg text-muted-foreground">{sc.index}</span>
                       <span>
-                        <span className="block">{sc.description}</span>
-                        {sc.caption && <span className="mt-0.5 block text-muted-foreground">“{sc.caption}”</span>}
+                        <span className="block">{asText(sc.description)}</span>
+                        {sc.caption && <span className="mt-0.5 block text-muted-foreground">“{asText(sc.caption)}”</span>}
                       </span>
-                      <span className="text-right tabular-nums text-muted-foreground">{sc.length_s != null ? `${sc.length_s} s` : ""}</span>
+                      <span className="text-right tabular-nums text-muted-foreground">{sc.length_s != null ? `${asText(sc.length_s)} s` : ""}</span>
                     </li>
                   ))}
                 </ol>
               </Card>
             )}
-            {plan.captions && plan.captions.length > 0 && (
+            {Array.isArray(plan.captions) && plan.captions.length > 0 && (
               <Card title={s.plan.captions}>
-                <ul className="space-y-1.5 text-sm">{plan.captions.map((c) => <li key={c} className="rounded-lg bg-muted px-3 py-1.5">{c}</li>)}</ul>
+                <ul className="space-y-1.5 text-sm">{plan.captions.map((c, i) => <li key={i} className="rounded-lg bg-muted px-3 py-1.5">{asText(c)}</li>)}</ul>
               </Card>
             )}
             {plan.end_card && (
               <Card title={s.plan.endCard}>
-                <p className="text-sm"><span className="font-semibold">{plan.end_card.product_name}</span></p>
-                <p className="mt-1 text-sm text-brand">{plan.end_card.cta}</p>
-                {plan.disclaimer && <p className="mt-2 text-xs text-muted-foreground">{plan.disclaimer}</p>}
+                <p className="text-sm"><span className="font-semibold">{asText(plan.end_card.product_name)}</span></p>
+                <p className="mt-1 text-sm text-brand">{asText(plan.end_card.cta)}</p>
+                {plan.disclaimer && <p className="mt-2 text-xs text-muted-foreground">{asText(plan.disclaimer)}</p>}
               </Card>
             )}
           </section>
@@ -113,7 +113,7 @@ export function PlanApproval({ job, onSend, replay }: { job: Job; onSend: (text:
             {(["seedream", "seedance", "evaluator"] as const).map((k) => (
               <div key={k} className="rounded-xl bg-muted p-2">
                 <dt className="text-[11px] leading-tight text-muted-foreground">{s.newJob.budget[k]}</dt>
-                <dd className="font-display text-xl font-medium tabular-nums">{est?.[k] ?? "–"}<span className="text-xs text-muted-foreground"> / {budget[k]}</span></dd>
+                <dd className="font-display text-xl font-medium tabular-nums">{countOf(est?.[k]) ?? "–"}<span className="text-xs text-muted-foreground"> / {budget[k]}</span></dd>
               </div>
             ))}
           </dl>
@@ -158,4 +158,30 @@ function Card({ title, icon, children, className }: { title: string; icon?: Reac
       {children}
     </div>
   );
+}
+
+/** An estimate the agent wrote as a number, a breakdown ({..., total_estimated: 10}) or text ("about 8"): one count. */
+function countOf(v: unknown): number | null {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string") { const m = v.match(/\d+/); return m ? Number(m[0]) : null; }
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    for (const key of ["total_estimated", "total", "estimated", "count"]) if (typeof o[key] === "number") return o[key] as number;
+    const nums = Object.values(o).filter((x): x is number => typeof x === "number");
+    return nums.length ? nums.reduce((a, b) => a + b, 0) : null;
+  }
+  return null;
+}
+
+/** Agent-written plan values can be text, numbers, lists or objects: always something React can show. */
+function asText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return v.map(asText).filter(Boolean).join(", ");
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    for (const key of ["text", "name", "label", "value"]) if (typeof o[key] === "string") return o[key] as string;
+    return Object.entries(o).map(([k, x]) => `${k.replace(/_/g, " ")}: ${asText(x)}`).join("; ");
+  }
+  return String(v);
 }

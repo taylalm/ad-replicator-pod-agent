@@ -19,6 +19,15 @@ cp -R "$ROOT/ui/web/out" "$STAGE/ui/web_out"
 echo "[build] backend"
 mkdir -p "$STAGE/ui/server"
 cp "$ROOT"/ui/server/*.py "$STAGE/ui/server/"
+# list prices and the example projects' cost records: shipped in the package, never in git
+if [ -f "$ROOT/ui/server/prices_local.json" ]; then
+  PY="$ROOT/ui/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+  [ -f "$ROOT/deploy/vefaas/make_demo_costs.py" ] && { "$PY" "$ROOT/deploy/vefaas/make_demo_costs.py" >/dev/null || echo "[build] WARNING: example costs not refreshed"; }
+  cp "$ROOT/ui/server/prices_local.json" "$STAGE/ui/server/"
+  [ -f "$ROOT/ui/server/demo_costs.json" ] && cp "$ROOT/ui/server/demo_costs.json" "$STAGE/ui/server/"
+else
+  echo "[build] no ui/server/prices_local.json: the site will show time and tokens only"
+fi
 cp "$ROOT/tools/ma_client.py" "$STAGE/tools/"
 # caption editor: the same drawing code, fonts and outro as the agent's video assembly
 mkdir -p "$STAGE/skills/video-assembly"
@@ -30,7 +39,7 @@ find "$STAGE/skills" -name "__pycache__" -type d -prune -exec rm -rf {} +
 # the recorded demo run (offline replay, "Demo mode" on the history page): left out unless INCLUDE_DEMO=1
 if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R "$ROOT/runs/demo_caseB" "$STAGE/runs/"; fi
 # read-only copies of delivered jobs (ModelArk keeps session files for about a day); SHOWCASE_JOBS overrides the list
-SHOWCASE_JOBS=${SHOWCASE_JOBS:-"job-20261023-120000-blnk job-20261021-131736-l0ge"}
+SHOWCASE_JOBS=${SHOWCASE_JOBS:-"job-20261023-120000-blnk job-20261021-131736-l0ge job-20261025-110730-riuf job-20261025-112250-qae3"}
 if [ -n "$SHOWCASE_JOBS" ]; then
   "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$ROOT/ui/data/jobs" "$STAGE/runs/showcase" $SHOWCASE_JOBS
 fi
@@ -42,6 +51,7 @@ uvicorn==0.39.0
 python-multipart==0.0.20
 pillow==11.0.0
 imageio-ffmpeg==0.6.0
+yt-dlp[default]==2026.10.21
 EOF
 "$PY" -m pip download --quiet --only-binary=:all: --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 \
   --python-version 3.11 --implementation cp -d "$OUT/wheels" -r "$STAGE/requirements.txt"
@@ -63,8 +73,8 @@ export PYTHONPATH="$PWD/python_deps:$PWD/ui/server${PYTHONPATH:+:$PYTHONPATH}"
 export UI_STATIC_DIR="${UI_STATIC_DIR:-$PWD/ui/web_out}"
 export UI_DATA_DIR="${UI_DATA_DIR:-/tmp/ad-replicator/jobs}"
 export UI_DOWNLOAD_MAX_BYTES="${UI_DOWNLOAD_MAX_BYTES:-600000}"
-# prices per video are hidden by default (set UI_SHOW_COST=1 on the function to show them)
-export UI_SHOW_COST="${UI_SHOW_COST:-0}"
+# list-price cost per job is shown (set UI_SHOW_COST=0 on the function to hide every amount)
+export UI_SHOW_COST="${UI_SHOW_COST:-1}"
 # jobs started before this package was built are shipped as showcase copies or left out (their session files expire)
 export UI_DISCOVER_AFTER="${UI_DISCOVER_AFTER:-__BUILD_TIME__}"
 mkdir -p "$UI_DATA_DIR"

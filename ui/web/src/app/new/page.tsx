@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle2, CircleAlert, FileVideo, Loader2, Paperclip, Sparkles, Upload, X } from "lucide-react";
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { api, ApiError, type Reference, type ValidateResult } from "@/lib/api";
+import { api, ApiError, type Reference, type SampleLink, type ValidateResult } from "@/lib/api";
 import { fmtBytes } from "@/lib/format";
 import { t } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -75,16 +75,47 @@ function NewJobForm() {
     }
   };
 
+  // a TikTok / Facebook / YouTube / Instagram link: the site downloads the video and hands it on like an upload
+  const [social, setSocial] = useState<SampleLink | null>(null);
+  const socialFor = useRef<string>("");
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (pollTimer.current) clearTimeout(pollTimer.current); }, []);
+  const downloadSocial = useCallback(async (url: string) => {
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    socialFor.current = url;
+    setSocial({ id: "", state: "starting", progress: 0, platform: "", url, title: null, duration: null, size: null, ref: null, error: null });
+    const poll = async (id: string) => {
+      try {
+        const st = await api.sampleLinkStatus(id);
+        if (socialFor.current !== url) return;
+        setSocial(st);
+        if (st.state !== "done" && st.state !== "failed") pollTimer.current = setTimeout(() => void poll(id), 1500);
+      } catch (e) {
+        if (socialFor.current === url) setSocial((cur) => cur && { ...cur, state: "failed", error: e instanceof Error ? e.message : String(e) });
+      }
+    };
+    try {
+      const st = await api.sampleLink(url);
+      if (socialFor.current !== url) return;
+      setSocial(st);
+      pollTimer.current = setTimeout(() => void poll(st.id), 1200);
+    } catch (e) {
+      if (socialFor.current === url) setSocial((cur) => cur && { ...cur, state: "failed", error: e instanceof Error ? e.message : String(e) });
+    }
+  }, []);
+
   const validateSample = useCallback(async (url: string) => {
     if (!url.trim()) { setSampleCheck({ state: "idle" }); return; }
+    if (social && socialFor.current === url.trim() && social.state !== "failed") return;  // already downloading or done
     setSampleCheck({ state: "checking" });
     try {
       const r = await api.validateSample(url.trim());
       setSampleCheck({ state: "done", result: r });
+      if (r.social && !demo) void downloadSocial(url.trim());
     } catch (e) {
       setSampleCheck({ state: "done", result: { ok: false, reason: e instanceof ApiError && e.status === 0 ? s.app.backendDown : String(e), content_type: null, size_bytes: null } });
     }
-  }, [s.app.backendDown]);
+  }, [s.app.backendDown, social, demo, downloadSocial]);
 
   const addChip = (text: string) => setReq((r) => (r.trim() ? `${r.replace(/\s+$/, "")}\n${text}` : text));
 
@@ -93,7 +124,10 @@ function NewJobForm() {
     if (sampleMode === "upload") {
       if (sampleFile.state !== "done") e.sample = sampleFile.state === "uploading" ? s.newJob.sample.uploading : s.newJob.errors.sampleRequired;
     } else if (!sample.trim()) e.sample = s.newJob.errors.sampleRequired;
-    else if (sampleCheck.state === "done" && sampleCheck.result && !sampleCheck.result.ok && !demo) e.sample = sampleCheck.result.reason ?? "";
+    else if (social && socialFor.current === sample.trim() && !demo) {
+      if (social.state === "failed") e.sample = social.error ?? s.newJob.errors.sampleRequired;
+      else if (social.state !== "done") e.sample = s.newJob.sample.social.busy;
+    } else if (sampleCheck.state === "done" && sampleCheck.result && !sampleCheck.result.ok && !demo) e.sample = sampleCheck.result.reason ?? "";
     if (!product.trim()) e.product = s.newJob.errors.productRequired;
     else if (!/^https:\/\//i.test(product.trim())) e.product = s.newJob.errors.productHttps;
     if (req.trim().length < 12 && !demo) e.req = s.newJob.errors.requirementsShort;
@@ -106,6 +140,7 @@ function NewJobForm() {
     if (validate()) setConfirm(true);
   };
 
+  const socialRef = sampleMode === "link" && social?.state === "done" && socialFor.current === sample.trim() ? social.ref : null;
   const start = async () => {
     setSubmitting(true);
     setSubmitError(null);
@@ -116,8 +151,9 @@ function NewJobForm() {
     try {
       const job = await api.createJob({
         title: title.trim() || undefined, product_url: product.trim(), requirements: req.trim(),
-        sample_url: sampleMode === "link" ? sample.trim() : "",
-        sample_upload: sampleMode === "upload" && sampleFile.ref ? { file_id: sampleFile.ref.file_id, filename: sampleFile.ref.filename, local_name: sampleFile.ref.local_name } : null,
+        sample_url: sampleMode === "link" && !socialRef ? sample.trim() : "",
+        sample_upload: sampleMode === "upload" && sampleFile.ref ? { file_id: sampleFile.ref.file_id, filename: sampleFile.ref.filename, local_name: sampleFile.ref.local_name }
+          : socialRef ? { file_id: socialRef.file_id, filename: socialRef.filename, local_name: socialRef.local_name, source_url: socialRef.source_url } : null,
         budget, options: { length_s: length, resolution: res, captions, video_model: videoModel, image_model: imageModel }, auto_approve: autoApprove, step_approve: stepApprove,
         references: refs.filter((r) => !r.pending && !r.error).map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note })),
       });
@@ -130,6 +166,8 @@ function NewJobForm() {
   };
 
   const sampleState = sampleCheck.state === "done" ? sampleCheck.result : undefined;
+  const socialNow = social && socialFor.current === sample.trim() ? social : null;
+  const socialBusy = !!socialNow && socialNow.state !== "done" && socialNow.state !== "failed";
 
   return (
     <form onSubmit={onReview} className="mx-auto max-w-3xl space-y-8" noValidate>
@@ -182,22 +220,38 @@ function NewJobForm() {
                 placeholder={s.newJob.sample.placeholder}
                 value={sample}
                 onChange={(e) => { setSample(e.target.value); setSampleCheck({ state: "idle" }); }}
+                onPaste={(e) => { const v = e.clipboardData.getData("text").trim(); if (v) setTimeout(() => void validateSample(v), 0); }}
                 onBlur={() => void validateSample(sample)}
                 aria-invalid={!!errors.sample || (sampleState ? !sampleState.ok : undefined)}
                 aria-describedby="sample-help sample-status"
                 className="h-11 rounded-xl pr-10 text-base"
               />
               <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
-                {sampleCheck.state === "checking" && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-                {sampleState?.ok && <CheckCircle2 className="size-4 text-success" aria-hidden />}
-                {sampleState && !sampleState.ok && <CircleAlert className="size-4 text-danger" aria-hidden />}
+                {(sampleCheck.state === "checking" || socialBusy) && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+                {!socialBusy && (socialNow ? socialNow.state === "done" : sampleState?.ok) && <CheckCircle2 className="size-4 text-success" aria-hidden />}
+                {!socialBusy && (socialNow ? socialNow.state === "failed" : sampleState && !sampleState.ok) && <CircleAlert className="size-4 text-danger" aria-hidden />}
               </span>
             </div>
+            {socialNow ? (
+              <p id="sample-status" className={cn("mt-1.5 text-sm", socialNow.state === "done" ? "text-success" : socialNow.state === "failed" ? "text-danger" : "text-muted-foreground")} aria-live="polite">
+                {socialNow.state === "done" && s.newJob.sample.social.done(socialNow.platform, socialNow.title ?? "", socialNow.duration ? `${Math.round(socialNow.duration)} s` : "", fmtBytes(socialNow.size))}
+                {socialNow.state === "failed" && !errors.sample && (
+                  <>{socialNow.error}{" "}
+                    <button type="button" className="font-semibold underline underline-offset-2" onClick={() => void downloadSocial(sample.trim())}>{s.newJob.sample.social.retry}</button>
+                  </>
+                )}
+                {(socialNow.state === "starting" || socialNow.state === "reading") && s.newJob.sample.social.reading(socialNow.platform || sampleState?.social || "")}
+                {socialNow.state === "downloading" && s.newJob.sample.social.downloading(socialNow.platform, socialNow.progress)}
+                {socialNow.state === "converting" && s.newJob.sample.social.converting}
+                {socialNow.state === "uploading" && s.newJob.sample.social.uploading}
+              </p>
+            ) : (
             <p id="sample-status" className={cn("mt-1.5 text-sm empty:hidden", sampleState?.ok ? "text-success" : "text-danger")} aria-live="polite">
               {sampleCheck.state === "checking" && <span className="text-muted-foreground">{s.newJob.sample.checking}</span>}
-              {sampleState?.ok && s.newJob.sample.ok(fmtBytes(sampleState.size_bytes))}
+              {sampleState?.ok && !sampleState.social && s.newJob.sample.ok(fmtBytes(sampleState.size_bytes))}
               {sampleState && !sampleState.ok && !errors.sample && sampleState.reason}
             </p>
+            )}
             </>
           )}
         </Field>

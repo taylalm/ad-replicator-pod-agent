@@ -62,9 +62,10 @@ def ts_seconds(e: dict) -> Optional[float]:
 
 
 def text_of(content: Any) -> str:
+    from steplines import normalize  # progress lines written in the user's language read as STEP lines
     if isinstance(content, list):
-        return "\n".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text")
-    return str(content or "")
+        return normalize("\n".join(c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"))
+    return normalize(str(content or ""))
 
 
 def file_kind(name: str) -> str:
@@ -375,15 +376,19 @@ def plain_errors(events: List[dict], parsed: dict) -> List[dict]:
     """Errors in plain words. Errors followed by successful agent activity are marked resolved and collapsed; repeated
     model-request failures within one incident are counted instead of listed one by one."""
     out = []
-    for s in parsed["steps"]:
-        if s["status"] == "failed":
-            out.append({
-                "kind": "step_failed", "step": s["n"],
-                "title": f"Step {s['n']} ({pretty_name(s['name'])}) could not finish",
-                "text": s["reason"] or "The agent reported a failure without a reason.",
-                "next": "The run stops here. Fix the input it mentions (for example a direct MP4 link or a reachable product page) and start a new video, or send a message below to tell the agent how to continue.",
-                "at": s["finished_at"], "resolved": False,
-            })
+    failed = [s for s in parsed["steps"] if s["status"] == "failed"]
+    asks = _asks_user(events)
+    for s in failed:
+        decision = asks and s is failed[-1]  # the agent stopped on a question: a choice for the user, not a crash
+        out.append({
+            "kind": "step_decision" if decision else "step_failed", "step": s["n"],
+            "title": f"Step {s['n']} ({pretty_name(s['name'])}) needs your decision" if decision else f"Step {s['n']} ({pretty_name(s['name'])}) could not finish",
+            "text": s["reason"] or "The agent reported a failure without a reason.",
+            "next": ("The agent is waiting for your answer. Read the options in its latest message below and reply with your choice "
+                     "(for example \"1\"); it continues from this step." if decision else
+                     "The run stops here. Fix the input it mentions (for example a direct MP4 link or a reachable product page) and start a new video, or send a message below to tell the agent how to continue."),
+            "at": s["finished_at"], "resolved": False,
+        })
     # last time the agent did real work (a successful model request, a tool call or a message)
     last_ok = None
     for e in events:
@@ -613,6 +618,14 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
     if isinstance(cj_list, dict):  # the agent often writes {clip_id: {file, status, current, superseded_by}}
         cj_list = [{"id": k, **v} for k, v in cj_list.items() if isinstance(v, dict)]
     current_files, superseded_files = set(), set()
+    if isinstance(cj_list, list):  # nested records: {clip_01: {file, takes: [{file, current}, ...]}}
+        cj_list = cj_list + [t for m in cj_list if isinstance(m, dict) for t in (m.get("takes") or []) if isinstance(t, dict)]
+    # the takes the newest edit plan uses are what the ad shows: they are the current takes, whatever else says
+    in_cut = set()
+    plans = sorted(files_dir.glob("edit_plan*.json"), key=lambda p: p.stat().st_mtime)
+    if plans:
+        plan_json = read_json(plans[-1]) or {}
+        in_cut = {Path(str(c.get("path") or "")).name for c in plan_json.get("clips") or [] if isinstance(c, dict)}
     for m in cj_list if isinstance(cj_list, list) else []:
         if isinstance(m, dict) and (m.get("file") or m.get("id")):
             fname = Path(str(m.get("file") or f"{m.get('id')}.mp4")).name
@@ -624,8 +637,10 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
     cmd_inputs = command_inputs(files_dir, names)
     stills = still_jobs(files_dir, names)
     for base, takes in groups.items():
-        # current take: marked current in clips.json > not marked superseded > the plain name > the newest file
-        takes.sort(key=lambda x: (x["name"] in current_files, x["name"] not in superseded_files, Path(x["name"]).stem == base, x.get("mtime") or 0))
+        # current take: used in the delivered cut > marked current in clips.json > not marked superseded > the plain
+        # name > the newest file
+        takes.sort(key=lambda x: (x["name"] in in_cut, x["name"] in current_files, x["name"] not in superseded_files,
+                                  Path(x["name"]).stem == base, x.get("mtime") or 0))
         cur = takes[-1]
         idx = re.search(r"(\d+)", base)
         pfile = next((n for n in (f"{base}.prompt.txt",) if n in names), None)
@@ -901,7 +916,7 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
         "status": st["status"], "awaiting_approval": st["awaiting_approval"], "awaiting_step": st.get("awaiting_step"), "session_phase": st["phase"],
         "steps": parsed["steps"], "current_step": parsed["current_step"], "plan_text": parsed["plan_text"],
         "paid_calls": paid, "files": files, "prompts": collect_prompts(files_dir.parent, files), "errors": errors, "usage": usage, "elapsed_s": elapsed,
-        "production": _production(files_dir.parent),
+        "production": _production(files_dir.parent), "cost": cost_of(files_dir.parent),
         "sample_url": sample_url, "last_agent_message": last_agent_message, "thumbnail": thumbnail,
         "n_events": len(events), "n_events_total": len(full_events), "updated_at": job.get("updated_at"),
         **assets,
@@ -911,10 +926,44 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
     return out
 
 
+_DEMO_COSTS: Optional[dict] = None
+
+
+def demo_costs() -> dict:
+    """Cost records of the example projects (demo_costs.json, shipped with the package)."""
+    global _DEMO_COSTS
+    if _DEMO_COSTS is None:
+        _DEMO_COSTS = read_json(Path(__file__).with_name("demo_costs.json")) or {}
+    return _DEMO_COSTS
+
+
+def _strip_prices(b: dict) -> dict:
+    """The breakdown without amounts (UI_SHOW_COST=0): time, tokens and tool calls stay."""
+    out = {k: v for k, v in b.items() if k not in ("total_usd", "parts", "left_out_usd", "prices_source", "runtime_per_h", "web_search_per_call")}
+    out["steps"] = [{k: v for k, v in r.items() if k not in ("usd", "parts")} for r in b.get("steps") or []]
+    return out
+
+
+def cost_of(job_dir: Path) -> Optional[dict]:
+    """Time, tokens and cost by step: an example project's own record, else everything the job used (costs.json "breakdown")."""
+    import os
+    b = demo_costs().get(job_dir.name)
+    if not b:
+        data = read_json(job_dir / "costs.json") if (job_dir / "costs.json").exists() else None
+        b = (data or {}).get("breakdown") if isinstance(data, dict) else None
+    if not isinstance(b, dict):
+        return None
+    if os.environ.get("UI_SHOW_COST", "1") == "0" or not b.get("prices_source") or "not configured" in str(b.get("prices_source")):
+        return _strip_prices(b)
+    return b
+
+
 def _production(job_dir: Path) -> Optional[dict]:
     """Production time and cost (costs.json). UI_SHOW_COST=0 hides every price and keeps the production time."""
     import os
     data = read_json(job_dir / "costs.json") if (job_dir / "costs.json").exists() else None
+    if isinstance(data, dict):
+        data = {k: v for k, v in data.items() if k != "breakdown"}  # sent as "cost" (cost_of)
     if isinstance(data, dict) and os.environ.get("UI_SHOW_COST", "1") == "0":
         return {"production_s": data.get("production_s"), "steps": data.get("steps"), "waiting_s": data.get("waiting_s")}
     return data
@@ -923,8 +972,9 @@ def _production(job_dir: Path) -> Optional[dict]:
 def job_summary(job: dict, derived: dict) -> dict:
     """Compact row for the history list."""
     prod = derived.get("production") or {}
+    cost = derived.get("cost") or {}
     return {
-        "production_s": prod.get("production_s"), "cost_per_video_usd": prod.get("cost_per_video_usd"),
+        "production_s": prod.get("production_s"), "cost_usd": cost.get("total_usd"), "cost_mode": cost.get("mode"),
         "id": job["id"], "title": job.get("title"), "created_at": job.get("created_at"), "demo": bool(job.get("demo")),
         "read_only": bool(job.get("demo") or job.get("example") or job.get("frozen")),
         "status": derived["status"], "thumbnail": derived["thumbnail"], "current_step": derived["current_step"],

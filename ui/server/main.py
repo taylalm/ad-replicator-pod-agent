@@ -28,7 +28,8 @@ from compose import compose_message  # noqa: E402
 from derive import compact_event, derive_job, job_summary, now_iso  # noqa: E402
 from paths import DATA_DIR, RUNS_DIR, TOOLS_DIR, load_module, ma_client  # noqa: E402
 from sync import SYNCER  # noqa: E402
-from validate import is_https_url, validate_sample  # noqa: E402
+from validate import is_https_url, social_platform, validate_sample  # noqa: E402
+import social  # noqa: E402
 
 app = FastAPI(title="DZT Video Ads Replication Agent UI", version="0.1.0")
 app.add_middleware(
@@ -84,8 +85,23 @@ class ImportBody(BaseModel):
 
 
 # ----------------------------------------------------------------------------- helpers
+_MISS_DISCOVER = [0.0]
+
+
 def _load(job_id: str):
     d = store.job_dir(job_id)
+    if d is None and re.fullmatch(r"job-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}", job_id or "") and time.time() - _MISS_DISCOVER[0] > 10:
+        # a fresh (or second) serverless instance knows only the jobs it has seen: look the session up before saying 404
+        _MISS_DISCOVER[0] = time.time()
+        try:
+            if SYNCER.discover():
+                d = store.job_dir(job_id)
+                if d is not None:
+                    SYNCER.start(job_id)
+                    SYNCER.sync_once(job_id)  # events and files now, so the page opens complete
+        except Exception as e:
+            print(f"[ui] discover for {job_id}: {type(e).__name__}: {str(e)[:160]}", flush=True)
+        d = store.job_dir(job_id)
     if d is None:
         raise HTTPException(404, f"job {job_id} not found")
     job = store.read_job(d)
@@ -150,6 +166,25 @@ def validate_sample_ep(body: UrlBody):
     return validate_sample(body.url)
 
 
+@app.post("/api/sample-link")
+def sample_link_start(body: UrlBody):
+    """Downloads a public TikTok / Facebook / Instagram / YouTube / X video for a new job (poll GET /api/sample-link/{id}).
+    The finished file goes to the Files API like an upload; the answer's `ref` is passed as sample_upload."""
+    v = validate_sample(body.url)
+    if not v.get("social"):
+        raise HTTPException(422, v.get("reason") or "Not a Facebook, Instagram, YouTube or X video link.")
+    updir = _upload_dir(None)
+    return social.start(body.url.strip(), updir, lambda path, safe, note: _send_upload(path, safe, note))
+
+
+@app.get("/api/sample-link/{dl_id}")
+def sample_link_status(dl_id: str):
+    st = social.get(dl_id)
+    if st is None:  # another serverless instance, or a restart: start again
+        raise HTTPException(404, "This download is not known here any more. Paste the link again.")
+    return st
+
+
 @app.post("/api/jobs")
 def create_job(body: NewJob):
     upload = body.sample_upload or None
@@ -161,6 +196,8 @@ def create_job(body: NewJob):
     else:
         if not is_https_url(body.sample_url):
             raise HTTPException(422, "The sample video link must be an https:// link.")
+        if social_platform(body.sample_url):  # the agent cannot open social pages: the site downloads them first
+            raise HTTPException(422, "Social-media links are downloaded on this page first (POST /api/sample-link); send the result as sample_upload.")
         v = validate_sample(body.sample_url)
         if not v["ok"]:
             raise HTTPException(422, v["reason"])
@@ -212,7 +249,8 @@ def create_job(body: NewJob):
             import shutil
             ext_m = re.search(r"[.](\w+)$", src.name)
             shutil.copyfile(src, fd / ("sample." + (ext_m.group(1).lower() if ext_m else "mp4")))
-        job["inputs"]["sample_upload"] = {"filename": upload.get("filename"), "file_id": upload.get("file_id")}
+        job["inputs"]["sample_upload"] = {"filename": upload.get("filename"), "file_id": upload.get("file_id"),
+                                          **({"source_url": upload["source_url"]} if upload.get("source_url") else {})}
     store.write_job(d, job)
     store.write_events(d, [])
     try:
@@ -292,6 +330,9 @@ def _persist_to_session(job: dict):
         if not job.get("session_id"):
             return
         client = _client()
+        if path.suffix.lower() == ".json":  # the Files API refuses JSON: keep it as a packed PNG (webfiles.py)
+            import webfiles
+            path, mount = webfiles.pack(path), webfiles.mount_for(mount)
         up = client.upload_file(str(path))
         client.wait_file_active(up["id"])
         client.add_resource(job["session_id"], up["id"], mount)
@@ -434,7 +475,25 @@ def accept_take(job_id: str, body: AcceptBody):
         take = GEN.accept(d, body.file)
     except FileNotFoundError:
         raise HTTPException(404, "take not found")
+    if take.get("kind") == "clip":  # "Use this take" and the scene picker are the same choice
+        import scenes as SCN
+        picks = SCN.load_picks(d)
+        picks[take["clip"]] = {"file": take["file"], "include": True}
+        SCN.save_picks(d, picks)
     rebuild = None
+    if take.get("kind") == "clip" and not _delivered(d, job):
+        # the agent has not assembled the ad yet: tell it to use this take for the clip (the file is in its uploads)
+        msg = (f"USE TAKE: the user chose a take made on the site for {take['clip']}: /mnt/session/uploads/web_{take['file']} "
+               f"(clip check {((take.get('check') or {}).get('verdict') or 'not run')}). Copy it into your clips folder as the current "
+               f"take of {take['clip']} (keep the older takes as _vN), record it in clips.json, do not regenerate {take['clip']}, and "
+               "continue the workflow where you left off. Answer in English.")
+        try:
+            _client().send_message(job["session_id"], msg)
+            SYNCER.start(job_id)
+            rebuild = {"state": "sent_to_agent"}
+        except Exception as e:
+            rebuild = {"state": "failed", "error": f"could not tell the agent: {str(e)[:200]}"}
+        return {"ok": True, "take": take, "rebuild": rebuild}
     if take.get("kind") == "clip":  # the chosen take goes straight into the ad: rebuild the final with it
         _, _, names, final = _editor_context(job_id)
         remote = _remote_for(job)
@@ -446,10 +505,68 @@ def accept_take(job_id: str, body: AcceptBody):
     return {"ok": True, "take": take, "rebuild": rebuild}
 
 
+def _delivered(d: Path, job: dict) -> bool:
+    """True once the agent has assembled the ad (an edit plan exists): only then can the site rebuild it."""
+    if any(store.files_dir(d).glob("edit_plan*.json")):
+        return True
+    return any(re.match(r"edit_plan.*\.json$", n) for n in (job.get("files_index") or {}))
+
+
+class ScenePicks(BaseModel):
+    picks: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  # {clip_01: {file, include}}
+    apply: bool = False
+
+
+@app.get("/api/jobs/{job_id}/scenes")
+def get_scenes(job_id: str):
+    """Every scene with all its takes (agent's cut, its earlier takes, site takes) and the saved choice."""
+    import scenes as SCN
+    d, job, events = _load(job_id)
+    derived = derive_job(job, events, store.files_dir(d))
+    rows = SCN.options(d, store.files_dir(d), {**derived, "id": job_id}, GEN.read_takes(d))
+    return {"scenes": rows, "assembled": _delivered(d, job), "export": CAP.EXPORTS.get(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/scenes")
+def set_scenes(job_id: str, body: ScenePicks):
+    """Saves the picks; with apply, rebuilds the ad with them (or, before the agent's first cut, tells the agent)."""
+    import scenes as SCN
+    d, job, events = _load(job_id)
+    _writable(job)
+    path = SCN.save_picks(d, body.picks)
+    try:
+        _persist_to_session(job)(path, f"web_{path.name}")
+    except Exception as e:
+        print(f"[ui] {job_id}: scene picks not kept in the session: {str(e)[:160]}", flush=True)
+    if not body.apply:
+        return {"ok": True, "state": "saved"}
+    picks = SCN.load_picks(d)
+    if _delivered(d, job):
+        _, _, names, final = _editor_context(job_id)
+        remote = _remote_for(job)
+        try:
+            return GEN.rebuild(job_id, d, lambda n: CAP._local(d, n, remote) if n else None, CAP.load_doc(d, names, final),
+                               _persist_to_session(job), CAP.EXPORTS, picks=picks)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+    derived = derive_job(job, events, store.files_dir(d))
+    msg = SCN.agent_message(SCN.options(d, store.files_dir(d), {**derived, "id": job_id}, GEN.read_takes(d)), picks)
+    if not msg:
+        return {"ok": True, "state": "unchanged"}
+    try:
+        _client().send_message(job["session_id"], msg)
+    except Exception as e:
+        raise HTTPException(502, f"Could not tell the agent: {str(e)[:200]}")
+    SYNCER.start(job_id)
+    return {"ok": True, "state": "sent_to_agent"}
+
+
 @app.post("/api/jobs/{job_id}/rebuild")
 def rebuild_final(job_id: str):
     d, job, names, final = _editor_context(job_id)
     _writable(job)
+    if not _delivered(d, job):
+        raise HTTPException(409, "The agent has not assembled this ad yet. Chosen takes are passed to the agent, which uses them when it builds the ad.")
     doc = CAP.load_doc(d, names, final)
     remote = _remote_for(job)
     try:
@@ -472,6 +589,10 @@ def request_draft(job_id: str, body: DraftBody):
     if not fb:
         raise HTTPException(422, "Write what should change.")
     lines = [f"DRAFT: clip {clip} | target: {target} | MODEL: {body.model or 'same as before'} | FEEDBACK: {fb}"]
+    if not _delivered(d, job):
+        lines.append("NOTE: the ad is not delivered yet. Write the draft, then CONTINUE THE WORKFLOW where you left off (same step, "
+                     "no restart) without waiting for a reply. Only the draft's short summary is in the user's language; every "
+                     "STEP line and other message stays in English.")
     atts = [a for a in body.attachments if str(a.get("path", "")).startswith("/mnt/session/uploads/")]
     if atts:
         lines.append("ATTACHMENTS:")

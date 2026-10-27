@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, ExternalLink, FastForward, Pause, Play } from "lucide-react";
+import { CostDialog, usd } from "@/components/cost-breakdown";
 import { DeleteJob, EditableTitle } from "@/components/job-actions";
 import { StatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,11 @@ export function JobHeader({ job, title, subtitle, replay }: {
   const s = t();
   const router = useRouter();
   const [name, setName] = useState(job.title);
+  const [costOpen, setCostOpen] = useState(false);
+  const cost = job.cost;
+  // the breakdown's figures when there is one (an example project's own record), else the session's usage
+  const tokens = cost ? cost.tokens.total : job.usage.input_tokens + job.usage.output_tokens;
+  const toolCalls = cost ? cost.tool_calls : job.usage.tool_calls;
   return (
     <header className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -45,11 +51,6 @@ export function JobHeader({ job, title, subtitle, replay }: {
           <Meta label={s.common.createdAt}>{fmtDate(job.created_at)}</Meta>
           <Meta label={s.live.productionTime}>{job.production ? fmtDuration(job.production.production_s) : "–"}</Meta>
           {job.production?.waiting_s ? <Meta label={s.live.waitingTime}>{fmtDuration(job.production.waiting_s)}</Meta> : null}
-          {job.production?.cost_per_video_usd != null && (
-            <Meta label={s.live.costPerVideo}>
-              <span title={s.live.costTitle(`$${(job.production.cost_total_usd ?? job.production.cost_per_video_usd).toFixed(2)}`)}>${job.production.cost_per_video_usd.toFixed(2)}</span>
-            </Meta>
-          )}
           <Meta label={s.common.product}>
             {job.inputs.product_url ? (
               <a href={job.inputs.product_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brand underline-offset-2 hover:underline">
@@ -57,8 +58,15 @@ export function JobHeader({ job, title, subtitle, replay }: {
               </a>
             ) : "–"}
           </Meta>
-          <Meta label={s.common.tokens}>{fmtTokens(job.usage.input_tokens + job.usage.output_tokens)} · {job.usage.tool_calls} {s.common.toolCalls}</Meta>
+          <Meta label={s.common.tokens}>
+            {cost ? <CostButton onClick={() => setCostOpen(true)}>{fmtTokens(tokens)} · {toolCalls} {s.common.toolCalls}</CostButton>
+              : <>{fmtTokens(tokens)} · {toolCalls} {s.common.toolCalls}</>}
+          </Meta>
+          {cost?.total_usd != null && (
+            <Meta label={s.live.cost}><CostButton onClick={() => setCostOpen(true)}>{usd(cost.total_usd)}</CostButton></Meta>
+          )}
         </dl>
+        {cost && <CostDialog cost={cost} open={costOpen} onOpenChange={setCostOpen} />}
       </div>
       {replay?.enabled && replay.speed > 0 && job.status !== "done" && (
         <div className="flex gap-2">
@@ -69,6 +77,15 @@ export function JobHeader({ job, title, subtitle, replay }: {
         </div>
       )}
     </header>
+  );
+}
+
+function CostButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button type="button" onClick={onClick} title={t().live.costHint}
+      className="rounded-sm font-medium underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 outline-none hover:decoration-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
+      {children}
+    </button>
   );
 }
 
