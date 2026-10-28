@@ -13,6 +13,11 @@ The key is read from the ARK_API_KEY environment variable. If that is unset, the
 `arkcli` for its default platform profile (~/.arkcli-bp/config.yaml) is used. The key is never
 printed or written anywhere by this tool.
 
+Your agent, environment and vault: MA_AGENT_ID, MA_ENV_ID and MA_VAULT_ID, from the terminal's environment or from a
+`.env` file at the repository root (copy `.env.example`), or as --agent-id, --env-id, --vault-id. A variable set in the
+terminal wins over `.env`. There are no built-in ids; a command that needs a missing one stops and names it.
+`.env` is read for these ids only: the API key never goes into a file.
+
 Only the Python standard library is used (works with python3.9+).
 """
 from __future__ import annotations
@@ -31,12 +36,58 @@ import uuid
 from pathlib import Path
 
 DEFAULT_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
-# your own ids override these (environment variables MA_AGENT_ID, MA_ENV_ID, MA_VAULT_ID)
-DEFAULT_AGENT = os.environ.get("MA_AGENT_ID", "agent-20261019062933-08hyr")   # Video Ads Replication Agent
-DEFAULT_ENV = os.environ.get("MA_ENV_ID", "env-20261019074017-rseat")         # bare environment
-DEFAULT_VAULT = os.environ.get("MA_VAULT_ID", "vlt-20261019060142-n7vhm")     # vault holding ARK_API_KEY
+# Your agent, environment and vault come only from these environment variables, the repository's .env file, or the
+# --agent-id / --env-id / --vault-id options. There are no built-in ids: a missing one stops the command with a clear message.
+ID_VARS = ("MA_AGENT_ID", "MA_ENV_ID", "MA_VAULT_ID")
 TERMINAL_EVENTS = {"session.status_idle", "session.status_terminated", "session.deleted"}
 REPO = Path(__file__).resolve().parent.parent
+
+
+SETTINGS_FILE = REPO / ".env"
+
+
+def load_settings_file(path=SETTINGS_FILE):
+    """Copies MA_AGENT_ID / MA_ENV_ID / MA_VAULT_ID from `path` (KEY=value lines, `export` and quotes allowed) into
+    os.environ when they are not already set there. Every other line is ignored, so a key written there is never used."""
+    if not path.is_file():
+        return
+    for line in path.read_text().splitlines():
+        m = re.match(r"^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$", line)
+        if not m or m.group(1) not in ID_VARS:
+            continue
+        value = m.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].strip()
+        if value and not value.endswith("...") and not configured_id(m.group(1)):  # "agent-..." = example left unedited
+            os.environ[m.group(1)] = value
+
+
+class MissingSetting(Exception):
+    """A required id (MA_AGENT_ID, MA_ENV_ID or MA_VAULT_ID) is not set."""
+
+
+def configured_id(var):
+    """The id in environment variable `var`, or None when it is unset or empty."""
+    return (os.environ.get(var) or "").strip() or None
+
+
+def missing_ids():
+    """Names of the id variables that are not set."""
+    return [v for v in ID_VARS if not configured_id(v)]
+
+
+def require_id(value, var):
+    """`value` if given, else the id from environment variable `var`; raises MissingSetting when neither is set."""
+    value = (value or "").strip() or configured_id(var)
+    if not value:
+        raise MissingSetting(f"{var} is not set. Put your own id in .env at the repository root (copy .env.example) "
+                             f"or export it, e.g. `export {var}=<id>` (see the build guide, 'Your values').")
+    return value
+
+
+load_settings_file()
 
 
 # --------------------------------------------------------------------------- auth / http
@@ -131,14 +182,17 @@ class Client:
                              timeout=300)
 
     # ----------------------------------------------------------------- agents
-    def get_agent(self, agent_id=DEFAULT_AGENT):
+    def get_agent(self, agent_id=None):
+        agent_id = require_id(agent_id, "MA_AGENT_ID")
         return self.get(f"/agents/{agent_id}")
 
-    def agent_versions(self, agent_id=DEFAULT_AGENT, limit=20):
+    def agent_versions(self, agent_id=None, limit=20):
+        agent_id = require_id(agent_id, "MA_AGENT_ID")
         return self.get(f"/agents/{agent_id}/versions", limit=limit)
 
-    def update_agent(self, agent_id=DEFAULT_AGENT, **fields):
+    def update_agent(self, agent_id=None, **fields):
         """Posts the given fields with the current version number (optimistic lock per docs)."""
+        agent_id = require_id(agent_id, "MA_AGENT_ID")
         current = self.get_agent(agent_id)
         body = {"version": current["version"], **fields}
         return self.post(f"/agents/{agent_id}", body)
@@ -174,8 +228,10 @@ class Client:
         return self.post_multipart(f"/skills/{skill_id}/versions", fields, files)
 
     # ----------------------------------------------------------------- sessions
-    def create_session(self, agent_id=DEFAULT_AGENT, env_id=DEFAULT_ENV, vault_ids=(DEFAULT_VAULT,),
-                       title=None, agent_version=None):
+    def create_session(self, agent_id=None, env_id=None, vault_ids=None, title=None, agent_version=None):
+        agent_id = require_id(agent_id, "MA_AGENT_ID")
+        env_id = require_id(env_id, "MA_ENV_ID")
+        vault_ids = [v for v in (vault_ids or []) if v] or [require_id(None, "MA_VAULT_ID")]
         agent: dict | str = agent_id
         if agent_version is not None:
             agent = {"id": agent_id, "version": agent_version}
@@ -433,9 +489,9 @@ def live_printer(e: dict):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base-url", default=os.environ.get("ARK_BASE_URL", DEFAULT_BASE))
-    ap.add_argument("--agent-id", default=DEFAULT_AGENT)
-    ap.add_argument("--env-id", default=DEFAULT_ENV)
-    ap.add_argument("--vault-id", default=DEFAULT_VAULT)
+    ap.add_argument("--agent-id", help="default: $MA_AGENT_ID (required for agent, session create and run)")
+    ap.add_argument("--env-id", help="default: $MA_ENV_ID (required for session create and run)")
+    ap.add_argument("--vault-id", help="default: $MA_VAULT_ID (required for session create and run)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("agent", help="get | versions | set-system | set-skills")
@@ -598,6 +654,9 @@ def main(argv=None):
                     print(f"downloaded {name} ({size})")
     except ApiError as e:
         print(f"API error: {e}", file=sys.stderr)
+        sys.exit(2)
+    except MissingSetting as e:
+        print(f"Setup: {e}", file=sys.stderr)
         sys.exit(2)
 
 

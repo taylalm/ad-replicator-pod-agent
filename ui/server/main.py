@@ -146,7 +146,8 @@ def storage_check():
 def health():
     key_present = bool(os.environ.get("ARK_API_KEY")) or (Path.home() / ".arkcli-bp" / "config.yaml").exists()
     return {"ok": True, "time": now_iso(), "api_key_present": key_present, "data_dir": str(DATA_DIR),
-            "demo_jobs": [d.name for d in store.demo_dirs()], "agent": ma_client().DEFAULT_AGENT,
+            "demo_jobs": [d.name for d in store.demo_dirs()], "agent": ma_client().configured_id("MA_AGENT_ID"),
+            "missing_settings": ma_client().missing_ids(),
             "syncing": [k for k, t in SYNCER.threads.items() if t.is_alive()]}
 
 
@@ -205,6 +206,10 @@ def sample_link_status(dl_id: str):
 
 @app.post("/api/jobs")
 def create_job(body: NewJob):
+    missing = ma_client().missing_ids()
+    if missing:  # no built-in agent: the function must name its own agent, environment and vault
+        raise HTTPException(503, f"This site is not set up yet: set {', '.join(missing)} in the function's environment "
+                                 "variables and release it.")
     upload = body.sample_upload or None
     if upload:
         if not upload.get("file_id"):

@@ -17,7 +17,7 @@ Requirements: Python 3.9+, Node 20+, macOS or Linux.
 | Variable | Meaning |
 |---|---|
 | `ARK_API_KEY` | ModelArk API key. Never logged, never in responses. |
-| `MA_AGENT_ID`, `MA_ENV_ID`, `MA_VAULT_ID` | Your agent, environment and vault ids (see the main README). |
+| `MA_AGENT_ID`, `MA_ENV_ID`, `MA_VAULT_ID` | Required: your agent, environment and vault ids. Locally they come from `.env` at the repository root (copy `.env.example`); on veFaaS from the function's environment variables. Without them `/api/health` lists them under `missing_settings` and no video can start. |
 | `UI_BASIC_AUTH` | `user:password` to require a sign-in. `/api/health` stays open. |
 | `UI_PORT` | Port, default 3000. |
 | `UI_DATA_DIR` | Where jobs are stored, default `ui/data/jobs`. |

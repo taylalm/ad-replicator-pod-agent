@@ -53,11 +53,12 @@ Region `ap-southeast-1`. API base `https://ark.ap-southeast.bytepluses.com/api/v
    Repeat for the seven folders. To release a change later, run `skill upload --skill-id <id> --dir <folder>`.
 5. **Agent.** Create an agent with model GLM-5.3 Flash and the built-in toolset (all tools allowed), as in `agent/agent_config.json`. Then set the prompt and the pinned skill versions:
    ```bash
-   export MA_AGENT_ID=<agent id> MA_ENV_ID=<environment id> MA_VAULT_ID=<vault id>
+   cp .env.example .env              # then fill in MA_AGENT_ID, MA_ENV_ID, MA_VAULT_ID
    python3 tools/ma_client.py agent set-system --file agent/system_prompt.md
    python3 tools/ma_client.py agent set-skills --skill <skill_id>=<version> --skill ...
    ```
    A new skill version reaches the agent only after `set-skills`, and only in sessions started afterwards.
+   The three ids are required: the tools have no built-in ids and stop with a message naming any that is missing.
 6. **Web app.**
    ```bash
    ui/start.sh            # http://localhost:3000
