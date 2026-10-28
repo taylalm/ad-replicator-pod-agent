@@ -38,10 +38,21 @@ cp -R "$ROOT/skills/ugc-quality-gate/scripts" "$STAGE/skills/ugc-quality-gate/"
 find "$STAGE/skills" -name "__pycache__" -type d -prune -exec rm -rf {} +
 # the recorded demo run (offline replay, "Demo mode" on the history page): left out unless INCLUDE_DEMO=1
 if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R "$ROOT/runs/demo_caseB" "$STAGE/runs/"; fi
-# read-only copies of delivered jobs (ModelArk keeps session files for about a day); SHOWCASE_JOBS overrides the list
-SHOWCASE_JOBS=${SHOWCASE_JOBS:-"job-20261023-120000-blnk job-20261021-131736-l0ge job-20261025-110730-riuf job-20261025-112250-qae3"}
-if [ -n "$SHOWCASE_JOBS" ]; then
-  "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$ROOT/ui/data/jobs" "$STAGE/runs/showcase" $SHOWCASE_JOBS
+# read-only copies of delivered jobs (ModelArk keeps session files for about a day). SHOWCASE_JOBS overrides the
+# list; SHOWCASE_JOBS="" ships none. Jobs without a folder in ui/data/jobs (e.g. a fresh clone) are skipped.
+SHOWCASE_JOBS=${SHOWCASE_JOBS-"job-20261023-120000-blnk job-20261021-131736-l0ge job-20261025-110730-riuf job-20261025-112250-qae3"}
+FOUND_JOBS=""
+for job in $SHOWCASE_JOBS; do
+  if [ -f "$ROOT/ui/data/jobs/$job/job.json" ]; then
+    FOUND_JOBS="$FOUND_JOBS $job"
+  else
+    echo "[build] showcase: no local folder for $job, skipped"
+  fi
+done
+if [ -n "${FOUND_JOBS// /}" ]; then
+  "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$ROOT/ui/data/jobs" "$STAGE/runs/showcase" $FOUND_JOBS
+else
+  echo "[build] showcase: no example projects in this package"
 fi
 
 echo "[build] python dependencies for Linux x86_64, Python 3.11 (vendored: no build step needed on the function)"
