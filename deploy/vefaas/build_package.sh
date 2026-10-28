@@ -52,6 +52,10 @@ python-multipart==0.0.20
 pillow==11.0.0
 imageio-ffmpeg==0.6.0
 yt-dlp[default]==2026.10.21
+wrapt==1.16.0
+Deprecated==1.3.1
+pytz==2026.5
+six==1.17.0
 EOF
 "$PY" -m pip download --quiet --only-binary=:all: --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 \
   --python-version 3.11 --implementation cp -d "$OUT/wheels" -r "$STAGE/requirements.txt"
@@ -63,6 +67,14 @@ for whl in sorted(src.glob("*.whl")):
     zipfile.ZipFile(whl).extractall(dst)
 print(f"[build] vendored {len(list(src.glob('*.whl')))} wheels")
 EOF
+# TOS SDK (project files kept in the bucket): tos and crcmod ship as source only; both are pure Python here
+mkdir -p "$OUT/sdist"
+"$PY" -m pip download --quiet --no-deps --no-binary=:all: tos==2.9.3 crcmod==1.7 -d "$OUT/sdist"
+for t in "$OUT"/sdist/*.tar.gz; do tar xzf "$t" -C "$OUT/sdist"; done
+cp -R "$OUT/sdist/tos-2.9.3/tos" "$STAGE/python_deps/"
+cp -R "$OUT/sdist/crcmod-1.7/python3/crcmod" "$STAGE/python_deps/"
+rm -f "$STAGE/python_deps/crcmod/test.py"
+echo "[build] vendored tos 2.9.3 and crcmod 1.7 (pure Python)"
 
 cat > "$STAGE/run.sh" <<'EOF'
 #!/usr/bin/env bash

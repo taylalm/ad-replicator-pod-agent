@@ -94,7 +94,10 @@ def _load(job_id: str):
         # a fresh (or second) serverless instance knows only the jobs it has seen: look the session up before saying 404
         _MISS_DISCOVER[0] = time.time()
         try:
-            if SYNCER.discover():
+            from sync import restore_from_bucket
+            if restore_from_bucket(job_id) is not None:
+                SYNCER.start(job_id)
+            elif SYNCER.discover():
                 d = store.job_dir(job_id)
                 if d is not None:
                     SYNCER.start(job_id)
@@ -124,6 +127,21 @@ def _client():
 
 
 # ----------------------------------------------------------------------------- endpoints
+@app.middleware("http")
+async def _role_credentials(request: Request, call_next):
+    """veFaaS adds the bound IAM role's temporary keys to each request: keep the newest for the bucket (storage.py)."""
+    import storage
+    storage.remember_request_credentials(request.headers)
+    return await call_next(request)
+
+
+@app.get("/api/storage")
+def storage_check():
+    """Writes, reads, signs and deletes one small object in the bucket: shows whether project files are being kept."""
+    import storage
+    return storage.self_test()
+
+
 @app.get("/api/health")
 def health():
     key_present = bool(os.environ.get("ARK_API_KEY")) or (Path.home() / ".arkcli-bp" / "config.yaml").exists()
@@ -321,6 +339,11 @@ def _remote_for(job: dict):
 
     def get(name: str) -> Optional[str]:
         meta = index.get(name) or {}
+        if meta.get("tos"):  # kept in the bucket: a signed link that does not expire with the session
+            import storage
+            url = storage.signed_url(job["id"], f"files/{name}")
+            if url:
+                return url
         return _remote_url(job.get("session_id"), meta.get("id")) if meta.get("id") else None
     return get
 
@@ -629,8 +652,10 @@ def delete_job(job_id: str):
             if getattr(e, "status", None) != 404:  # already gone on ModelArk: still remove it here
                 raise HTTPException(502, f"The agent session could not be deleted: {str(e)[:300]}")
     import shutil
+    import storage
+    removed = storage.delete_job(job_id)  # the bucket copy goes too: deleting means everywhere
     shutil.rmtree(d, ignore_errors=True)
-    return {"ok": True, "deleted": job_id}
+    return {"ok": True, "deleted": job_id, "bucket_objects": removed}
 
 
 @app.post("/api/jobs/{job_id}/message")
@@ -709,6 +734,12 @@ def get_file(job_id: str, name: str, request: Request):
     path = store.files_dir(d) / name
     if not path.is_file():
         meta = (store.read_job(d).get("files_index") or {}).get(name) or {}
+        if meta.get("tos"):
+            import storage
+            url = storage.signed_url(job_id, f"files/{name}")
+            if url:
+                from fastapi.responses import RedirectResponse
+                return RedirectResponse(url, status_code=307)
         if meta.get("remote"):
             url = _remote_url(store.read_job(d).get("session_id"), meta.get("id"))
             if url:

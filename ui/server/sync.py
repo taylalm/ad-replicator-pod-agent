@@ -51,6 +51,8 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
             continue
         if known and known.get("id") == f["id"] and known.get("gone"):
             continue  # an overwritten older copy: its object no longer exists
+        if known and known.get("tos") and known.get("bytes") == f.get("bytes") and (known.get("id") in (None, f["id"])):
+            continue  # already kept in the bucket (storage.py)
         url = f.get("download_url")
         if not url:
             continue
@@ -68,7 +70,7 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
                     out.write(chunk)
             os.replace(tmp, dest / name)
         except Exception as e:  # keep going with the other files
-            if getattr(e, "code", None) in (403, 404):
+            if getattr(e, "code", None) in (403, 404) and not (known or {}).get("tos"):  # a bucket copy stays valid
                 index[name] = {"id": f["id"], "bytes": f.get("bytes"), "gone": True}
             log(f"download failed for {name}: {type(e).__name__}: {str(e)[:120]}")
             if tmp.exists():
@@ -78,6 +80,129 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
                        "mime_type": f.get("mime_type")}
         saved.append(name)
     return saved
+
+
+RECORDS = ("job.json", "events.json", "costs.json", "cost_cache.json", "captions_doc.json", "web_takes.json",
+           "web_paid_calls.json", "web_scene_picks.json", "web_edit_plan.json")
+_RECORDS_AT: Dict[str, float] = {}  # job id -> last upload of its records
+_RECORD_MTIME: Dict[str, float] = {}  # job id/name -> mtime uploaded
+
+
+def mirror_files(client, job: dict, d: Path, limit: int = 40) -> int:
+    """Copies the job's files into the bucket (storage.py) while their session links still work: local files as they
+    are, files that stay on ModelArk (bigger media) streamed from their link. Bounded per pass; the rest next pass."""
+    import storage
+    if not storage.enabled() or job.get("frozen") or job.get("demo") or job.get("example"):
+        return 0
+    jid, idx = job["id"], job.setdefault("files_index", {})
+    kept = job.setdefault("tos_files", {})  # name -> bytes stored in the bucket
+    fd = store.files_dir(d)
+    local = {p.name for p in fd.iterdir() if p.is_file() and not p.name.endswith(".part")} if fd.exists() else set()
+    links, copied = None, 0
+    for name in sorted(local | set(idx)):
+        meta = idx.get(name) or {}
+        if meta.get("gone") or name.startswith("."):
+            continue
+        path = fd / name
+        size = path.stat().st_size if path.is_file() else meta.get("bytes")
+        if size is not None and kept.get(name) == size:
+            continue
+        ok = False
+        if path.is_file():
+            ok = storage.put_file(jid, f"files/{name}", path)
+        elif meta.get("id") and not meta.get("tos") and job.get("session_id"):
+            if links is None:
+                links = {f["id"]: f.get("download_url") for f in client.session_files(job["session_id"])}
+            link = links.get(meta["id"])
+            ok = bool(link) and storage.copy_url(jid, f"files/{name}", link)
+        if ok:
+            kept[name] = size
+            if name in idx:
+                idx[name]["tos"] = True
+            copied += 1
+            if copied >= limit:
+                break
+    return copied
+
+
+def mirror_records(job: dict, d: Path, force: bool = False) -> int:
+    """Uploads the job's records (job.json, events, costs, the site's own records) that changed, at most once a minute
+    per job unless forced (a finished step, a deletion of the session...)."""
+    import storage
+    if not storage.enabled() or job.get("frozen") or job.get("demo") or job.get("example"):
+        return 0
+    jid = job["id"]
+    if not force and time.time() - _RECORDS_AT.get(jid, 0) < 60:
+        return 0
+    n = 0
+    for name in RECORDS:
+        p = d / name
+        if not p.is_file():
+            continue
+        m = p.stat().st_mtime
+        if _RECORD_MTIME.get(f"{jid}/{name}") == m:
+            continue
+        if storage.put_file(jid, name, p):
+            _RECORD_MTIME[f"{jid}/{name}"] = m
+            n += 1
+    _RECORDS_AT[jid] = time.time()
+    return n
+
+
+def restore_from_bucket(job_id: str) -> Optional[Path]:
+    """Recreates a job folder from the bucket (records now; small files later, in fill_from_bucket). Files that stay
+    in the bucket are listed in files_index as remote + tos, so they are served with signed links."""
+    import shutil
+    import storage
+    if store.job_dir(job_id) is not None or not storage.enabled():
+        return store.job_dir(job_id)
+    d = store.create_job_dir(job_id)
+    if not storage.download(job_id, "job.json", d / "job.json"):
+        shutil.rmtree(d, ignore_errors=True)
+        return None
+    for name in ("events.json", "costs.json"):  # what the job list needs; the other records come with the files
+        storage.download(job_id, name, d / name)
+    if not (d / "events.json").exists():
+        store.write_events(d, [])
+    job = store.read_job(d)
+    idx, kept = job.setdefault("files_index", {}), job.setdefault("tos_files", {})
+    for o in storage.list_keys(storage.key(job_id, "files/")):
+        name = o["key"].rsplit("/", 1)[-1]
+        idx[name] = {**(idx.get(name) or {}), "bytes": o["size"], "remote": True, "tos": True}
+        idx[name].pop("gone", None)
+        kept[name] = o["size"]
+    job["restored_from_bucket"] = True
+    job["fill_pending"] = True
+    store.write_job(d, job)
+    for name in RECORDS:  # what is on disk now is what the bucket holds
+        if (d / name).exists():
+            _RECORD_MTIME[f"{job_id}/{name}"] = (d / name).stat().st_mtime
+    log(f"{job_id}: restored from the bucket ({len(idx)} files)")
+    return d
+
+
+def fill_from_bucket(job: dict, d: Path, limit: int = 60) -> bool:
+    """Brings the small files of a restored job back to the instance disk (the page reads plans, prompts and checks
+    from disk); media stay in the bucket. Returns True when nothing is left to fetch."""
+    import storage
+    fd = store.files_dir(d)
+    fd.mkdir(parents=True, exist_ok=True)
+    for name in RECORDS[3:]:  # cost cache and the site's own records
+        if not (d / name).exists() and storage.download(job["id"], name, d / name):
+            _RECORD_MTIME[f"{job['id']}/{name}"] = (d / name).stat().st_mtime
+    got = 0
+    for name, meta in sorted((job.get("files_index") or {}).items()):
+        if not meta.get("tos") or (fd / name).exists():
+            continue
+        small = (meta.get("bytes") or 0) <= max(MAX_DOWNLOAD, 600_000) or name.endswith((".json", ".txt", ".md", ".sh"))
+        if not small:
+            continue
+        if storage.download(job["id"], f"files/{name}", fd / name):
+            meta["remote"] = False
+            got += 1
+            if got >= limit:
+                return False
+    return True
 
 
 def restore_sample(client, job: dict, dest: Path) -> Optional[str]:
@@ -193,6 +318,12 @@ class JobSyncer:
             return
         ev = threading.Event()
         self.wake[job_id] = ev
+        d = store.job_dir(job_id)
+        if d is not None and store.read_job(d).get("session_gone"):  # kept in the bucket, nothing left to sync
+            t = threading.Thread(target=self._fill_only, args=(job_id,), name=f"fill-{job_id}", daemon=True)
+            self.threads[job_id] = t
+            t.start()
+            return
         t = threading.Thread(target=self._run, args=(job_id, ev), name=f"sync-{job_id}", daemon=True)
         self.threads[job_id] = t
         t.start()
@@ -223,6 +354,13 @@ class JobSyncer:
         disk yet: on a fresh serverless instance the job list is rebuilt from ModelArk itself."""
         client = self.client()
         page, added, seen = None, 0, 0
+        try:  # jobs kept in the bucket come back with their files, even after their session links expired
+            import storage
+            for jid in storage.list_jobs():
+                if store.job_dir(jid) is None and restore_from_bucket(jid) is not None:
+                    added += 1
+        except Exception as e:
+            log(f"bucket discovery: {type(e).__name__}: {str(e)[:160]}")
         while True:
             q = "/sessions?limit=50" + (f"&page={page}" if page else "")
             r = client.get(q)
@@ -275,9 +413,15 @@ class JobSyncer:
                         elif k.strip() in ("AUTO_APPROVE", "STEP_APPROVE"):
                             inp[k.strip().lower()] = v.strip().lower().startswith("y")
                     job["inputs"] = inp
+            if job.get("fill_pending"):
+                job["fill_pending"] = not fill_from_bucket(job, d)
             index = job.get("files_index") or {}
             saved = sync_files(self.client(), job["session_id"], store.files_dir(d), index)
             job["files_index"] = index
+            try:
+                mirror_files(self.client(), job, d)
+            except Exception as e:
+                log(f"{job_id}: bucket copy: {type(e).__name__}: {str(e)[:160]}")
             restore_sample(self.client(), job, store.files_dir(d))
             restore_web_files(self.client(), job, d)
             web_paid = d / "web_paid_calls.json"  # a regeneration made on the site changes the cost too
@@ -299,7 +443,23 @@ class JobSyncer:
                               "paid_total": derived["paid_calls"]["total"], "elapsed_s": derived["elapsed_s"],
                               "verdict": derived["quality"][-1]["verdict"] if derived["quality"] else None}
             store.write_job(d, job)
+            try:
+                mirror_records(job, d, force=derived["status"] in FINISHED)
+            except Exception as e:
+                log(f"{job_id}: bucket records: {type(e).__name__}: {str(e)[:160]}")
             return {"new_events": len(new), "new_files": saved, "status": derived["status"]}
+
+    def _fill_only(self, job_id: str) -> None:
+        d = store.job_dir(job_id)
+        if d is None:
+            return
+        with store.lock_for(job_id):
+            job = store.read_job(d)
+            if job.get("fill_pending"):
+                while not fill_from_bucket(job, d):
+                    pass
+                job["fill_pending"] = False
+                store.write_job(d, job)
 
     def _auto_resume(self, job: dict, events: list) -> bool:
         """A session that went idle because the model provider stayed busy (retries exhausted on a rate limit or
@@ -358,9 +518,17 @@ class JobSyncer:
                     idle_polls = 0
             except Exception as e:
                 if getattr(e, "status", None) == 404 and "/sessions/" in str(getattr(e, "url", "")):
-                    # the agent session was deleted on ModelArk: drop the job from this instance and stop syncing it
+                    # the agent session was deleted on ModelArk: a job kept in the bucket stays (read-only from now on);
+                    # otherwise drop it from this instance. Either way, stop syncing it.
                     d = store.job_dir(job_id)
                     if d is not None:
+                        job = store.read_job(d)
+                        if job.get("tos_files"):
+                            job["session_gone"] = True
+                            store.write_job(d, job)
+                            mirror_records(job, d, force=True)
+                            log(f"{job_id}: session deleted on ModelArk, job kept from the bucket")
+                            return
                         import shutil
                         shutil.rmtree(d, ignore_errors=True)
                     log(f"{job_id}: session deleted on ModelArk, job removed")
