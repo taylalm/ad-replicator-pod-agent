@@ -4,28 +4,22 @@ The **Video Ads Replication Agent** is a BytePlus ModelArk Managed Agent. It tak
 
 | Section | Content |
 |---|---|
-| 1 | Quick Demo |
-| 2 | What it does |
-| 3 | How the agent works |
-| 4 | Get the code | 
-| 5 | Build guide (Parts A-D) |
-| 6 | Usage guide |
-| 7 | Maintain guide |
-| 8 | Reference, Validation and limitations, FAQ, Glossary |
+| 1 | What it does |
+| 2 | How the agent works |
+| 3 | Get the code | 
+| 4 | Build guide (Parts A-D) |
+| 5 | Usage guide |
+| 6 | Maintain guide |
+| 7 | Reference | 
+| 8 | Validation and limitations |
+| 9 | FAQ |
+| 10 | Glossary |
 
 ---
 
-## 1. Demo
+## 1. What it does
 
-[![Demo video: click to play](images/demo-thumbnail.png)](demo.mp4)
-
-*Click the picture to open it; the file is `guide/demo.mp4`.*
-
----
-
-## 2. What it does
-
-### 2.1 Overview
+### 1.1 Overview
 
 Print-on-demand shops live on short-video ads. A personalized blanket, socks with a child's name or a pet-face balaclava sells best when a buyer sees a real-looking family unwrap *their* version. The ads that already work on TikTok and Reels have proven hooks, pacing and moods. What the shop needs is the same ad again with its own product, its own personalization and new faces, without a shoot.
 
@@ -51,7 +45,7 @@ A web app lets marketers start runs, approve plans, regenerate single scenes, ed
                          └───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 Inputs and outputs
+### 1.2 Inputs and outputs
 
 | Type | Content | Form |
 |---|---|---|
@@ -71,7 +65,7 @@ A web app lets marketers start runs, approve plans, regenerate single scenes, ed
 - The ad keeps the sample's world: setting, decor, cast size, shot order, pacing and caption style.
 - It changes the product, the people, the names, the brand and the caption wording.
 
-### 2.3 People vs. product
+### 1.3 People vs. product
 
 - **People are always new and AI-generated.**
   - The cast matches the sample: as many people, with the same ages and gender mix.
@@ -82,7 +76,7 @@ A web app lets marketers start runs, approve plans, regenerate single scenes, ed
   - The website's own preview is the product reference.
   - Uploaded mockups add what the preview does not show.
 
-### 2.4 Acceptance criteria (C1-C8)
+### 1.4 Acceptance criteria (C1-C8)
 
 An independent evaluator scores each criterion from 1 to 5, with evidence:
 
@@ -109,9 +103,9 @@ An independent evaluator scores each criterion from 1 to 5, with evidence:
 
 ---
 
-## 3. How the agent works
+## 2. How the agent works
 
-### 3.1 The 11 steps
+### 2.1 The 11 steps
 
 The agent runs eleven steps and reports each with a fixed line that the web app reads:
 ```
@@ -133,7 +127,7 @@ Outputs go to `/mnt/session/outputs/<nn>_<step>/`, and every billable call is lo
 | 10 retries | (routing) | Only the routed step runs again, then 8 and 9 | Round n+1 | Max 3 rounds |
 | 11 deliver | (model) | Copy final, master, frames; write the report | `final.mp4`, `final_clean.mp4`, `report.md` | Verdict, scores, paid calls |
 
-### 3.2 Design decisions that made it work
+### 2.2 Design decisions that made it work
 
 - **The product comes from the live website.**
   - A model invents product details: which side carries the name, the portrait size, the leg pattern.
@@ -158,7 +152,7 @@ Outputs go to `/mnt/session/outputs/<nn>_<step>/`, and every billable call is lo
 
 ---
 
-## 4. Get the code
+## 3. Get the code
 
 **Repository:** https://github.com/taylalm/ad-replicator-pod-agent (branch `main`). Fork or import it into your organization's own Git account, so your changes and releases live in one place you control.
 
@@ -189,7 +183,7 @@ git clone https://github.com/taylalm/ad-replicator-pod-agent.git
 
 ---
 
-## 5. Build it
+## 4. Build it
 
 ### Before you start
 
@@ -642,28 +636,28 @@ Within a few minutes of a run:
 
 ---
 
-## 6. Use it
+## 5. Use it
 
-**6.1 Make an ad.**
+**5.1 Make an ad.**
 1. In the web app, click **New video**.
 2. Add the sample: upload it, or paste a Facebook / YouTube / Instagram link.
 3. Paste the product page URL.
 4. Write the brief: audience, what to avoid, approved offer wording, CTA.
 5. Choose the video and image models, the caption mode and the approval mode, then click **Start**.
 
-**6.2 Approve the plan.**
+**5.2 Approve the plan.**
 - The plan shows the cast, the options per person, the shot list next to the sample's scenes, the new captions and the cost estimate.
 - Approve it, or ask for changes in plain words.
 - With auto-approve on, the run continues without waiting.
 
-**6.3 Follow the run.** Each step shows its outputs as they arrive: people, website previews, stills, clips with their check verdicts. A run usually takes about an hour.
+**5.3 Follow the run.** Each step shows its outputs as they arrive: people, website previews, stills, clips with their check verdicts. A run usually takes about an hour.
 
-**6.4 Review the result.** The final plays next to the sample, with:
+**5.4 Review the result.** The final plays next to the sample, with:
 - the C1-C8 scores and their evidence
 - hard failures, if any
 - time and cost by step
 
-**6.5 Fix a scene.**
+**5.5 Fix a scene.**
 1. Under a clip or still, write what to change, in any language. Pictures or short videos can be attached.
 2. The agent writes a draft (an English prompt and inputs) without generating anything.
 3. Review or edit the draft, then click **Generate**.
@@ -672,22 +666,22 @@ Within a few minutes of a run:
 
 The scene picker lists every take of a scene.
 
-**6.6 Edit captions.**
+**5.6 Edit captions.**
 - Move, edit, retime or turn off each caption and the photo inset.
 - Effects: fade, pop, slide up, word by word, typewriter.
 - Export a new MP4. The agent's original stays available.
 - "All text off" gives the text-free master.
 
-**6.7 Download, rename, delete.**
+**5.7 Download, rename, delete.**
 - Every asset has its own download button, and the bottom of the page offers everything as one ZIP.
 - Rename a project with the pencil icon.
 - **Delete** removes the project from the site, the bucket and the agent session.
 
 ---
 
-## 7. Maintain it
+## 6. Maintain it
 
-### 7.1 What to change where
+### 6.1 What to change where
 
 | You want to change... | Change this | Release with |
 |---|---|---|
@@ -704,7 +698,7 @@ The scene picker lists every take of a scene.
 | Web app pages and behaviour | `ui/web/src`, `ui/server` | 7.6 |
 | Site password, key, bucket, IDs | Function environment variables | Release the function |
 
-### 7.2 Test before you release
+### 6.2 Test before you release
 
 | Change | Free test |
 |---|---|
@@ -714,7 +708,7 @@ The scene picker lists every take of a scene.
 
 Keep one short sample and one product page as your fixed test case, so results stay comparable between releases.
 
-### 7.3 Release a skill change
+### 6.3 Release a skill change
 
 1. **Upload the new version.**
    - In the console: Skills > open the skill > **Update Skills**, then upload the folder (up to 8 MB).
@@ -738,7 +732,7 @@ python3 tools/ma_client.py agent set-skills --skill <id>=<version> ...          
 - Check it in a new session, e.g. with the skill's `--dry-run`.
 - Write the new version into your values table and commit the change with a tag (e.g. `skills-assembly-v19`).
 
-### 7.4 Change the system prompt
+### 6.4 Change the system prompt
 
 1. Edit `agent/system_prompt.md`.
 2. Run `python3 tools/ma_client.py agent set-system --file agent/system_prompt.md`.
@@ -747,7 +741,7 @@ New sessions pick it up; running sessions keep the old prompt.
 
 **Keep the progress protocol intact.** The web app reads the `STEP n/11` lines and the message keywords (APPROVE, CHANGES, REGENERATE, DRAFT, ADD CLIP, REVISION, USE TAKE). Renaming them breaks the progress display.
 
-### 7.5 Versions and rollback
+### 6.5 Versions and rollback
 
 - Every agent update creates a new agent version.
 - `python3 tools/ma_client.py agent versions` lists them.
@@ -760,7 +754,7 @@ Save and commit that file after every release, so Git shows which prompt and ski
 2. `agent set-system`
 3. `agent set-skills` with the earlier skill versions (old skill versions stay available)
 
-### 7.6 Update the web app
+### 6.6 Update the web app
 
 1. Rebuild the ZIP (C1).
 2. Upload it in the function's Code tab and click Release.
@@ -769,7 +763,7 @@ Environment variables, the role and the bucket stay. Projects are rebuilt from t
 
 To undo a release, open the app's **Deployment history** and click **Roll back** on the earlier release (C4-b).
 
-### 7.7 Shop-specific settings
+### 6.7 Shop-specific settings
 
 The agent is generic; these parts carry the shop's identity. Update them when the brand changes, or when you set the agent up for another store:
 
@@ -782,7 +776,7 @@ The agent is generic; these parts carry the shop's identity. Update them when th
 | CTA wording expected by C8 | `skills/ugc-quality-gate/references/rubric.md` |
 | Web app accent colour | `ui/web/src/app/globals.css` |
 
-### 7.8 New products and new samples
+### 6.8 New products and new samples
 
 - **A new product on the same website** usually needs nothing.
   - The personalizer reads each page's form at step 2 (probe).
@@ -793,7 +787,7 @@ The agent is generic; these parts carry the shop's identity. Update them when th
 - **Ad safety of product artwork:** design options (animals, characters) can contain rude gestures or other brands. The agent checks them and picks safe options. If every option is unsafe, it stops for a decision.
 - **A new kind of sample** (a shot pattern the agent handles poorly): add the pattern to `ugc_shot_patterns.md` with what to do, then release the prompt-craft skill.
 
-### 7.9 Monitoring and logs
+### 6.9 Monitoring and logs
 
 | Where | What you see |
 |---|---|
@@ -808,7 +802,7 @@ The agent is generic; these parts carry the shop's identity. Update them when th
 ![Function monitoring](images/m-function-monitoring.png)
 *7.9. The function's Monitoring tab.*
 
-### 7.10 Cost
+### 6.10 Cost
 
 - **Managed Agents bills:**
   - the agent's tokens
@@ -832,7 +826,7 @@ The web app shows time, tokens and list-price cost per step. To show amounts, pl
 
 Without the file, every amount is 0 and the web app shows time and tokens only.
 
-### 7.11 Security
+### 6.11 Security
 
 - **Keys** live only in the vault and the function's environment variables, never in files, prompts or Git.
 - **Sign-in:** keep `UI_BASIC_AUTH` set; anyone who opens the site can start paid runs.
@@ -846,7 +840,7 @@ Without the file, every amount is 0 and the web app shows time and tokens only.
 - **Changing the site password:** update `UI_BASIC_AUTH`, then Release.
 - **Leaving team members:** change the site password and remove their console access.
 
-### 7.12 Routine checks
+### 6.12 Routine checks
 
 | When | Check |
 |---|---|
@@ -855,7 +849,7 @@ Without the file, every amount is 0 and the web app shows time and tokens only.
 | Monthly | Model list on the official docs (new versions, retirements); bucket size; unused projects deleted; key and password rotation if your policy asks |
 | When a model version is retired | Update the model ID in the system prompt, the skills and `ui/server/models.py`; test; release |
 
-### 7.13 Troubleshooting
+### 6.13 Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -878,9 +872,9 @@ Without the file, every amount is 0 and the web app shows time and tokens only.
 
 ---
 
-## 8. Reference
+## 7. Reference
 
-### 8.1 System prompt structure
+### 7.1 System prompt structure
 
 | Component | Purpose |
 |---|---|
@@ -915,7 +909,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 - Ad-safety hard failures are never delivered as passing; fix the cause, never edit the output by hand.
 ```
 
-### 8.2 Skills in detail
+### 7.2 Skills in detail
 
 | Skill | Key scripts | Pitfalls handled |
 |---|---|---|
@@ -927,7 +921,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 | video-assembly | `assemble.py`, `overlay.py`, bundled fonts and outro | Captions off faces and off the personalization; copied captions refused |
 | ugc-quality-gate | `gate.py`, `clip_check.py`, `still_check.py`, `check_batch.py`; rubric in `references/rubric.md` | Self-review blind spots; body orientation is still hard for the evaluator |
 
-### 8.3 The web app
+### 7.3 The web app
 
 | Part | What it does |
 |---|---|
@@ -935,7 +929,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 | Front end (`ui/web`, Next.js static export) | Your videos, New video, run progress, plan approval, results (final vs sample, scores, cost by step), scene picker, clip regeneration with drafts, caption and inset editor |
 | Messages it sends to the agent | APPROVE / CHANGES, REGENERATE, DRAFT, ADD CLIP, REVISION, USE TAKE(S) (see the system prompt) |
 
-### 8.4 Web app settings
+### 7.4 Web app settings
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -950,9 +944,9 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 ---
 
-## 9. Validation and known limitations
+## 8. Validation and known limitations
 
-### 9.1 Validated
+### 8.1 Validated
 
 - **Model trial:** 16 unattended runs (two products; Seedance 2.5, 2.0, 2.0 fast and 2.0 mini; Seedream pro and flash). All passed the gate.
 - **Runs on the deployed web app** for blanket, socks, balaclava and lounge pants, with per-step time and cost.
@@ -963,7 +957,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
   - unsafe-option detection: the agent stopped for a decision when every animal design on a product carried a rude gesture
   - bucket storage through the function role
 
-### 9.2 Enforced in code vs. prompt discipline
+### 8.2 Enforced in code vs. prompt discipline
 
 | Capability | Today | Status |
 |---|---|---|
@@ -980,7 +974,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 | Scene timing | From the analyzer's reading of contact sheets | Planned: deterministic scene-cut detection |
 | Permanent storage | Private bucket via the function's IAM role | Done |
 
-### 9.3 Known limitations
+### 8.3 Known limitations
 
 - **Agent-model rate limits:** about 3-4 parallel sessions; the web app resumes stalled runs.
 - **Real people in samples:** Seedance refuses inputs that show real people. So the sample video itself is never edited; it guides the new ad through words and faceless staging frames.
@@ -991,7 +985,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 ---
 
-## 10. FAQ
+## 9. FAQ
 
 **Can we use our own models or endpoints?** Yes. The agent model is set on the agent. Image and video models are chosen per run in the New video form; their endpoints are in `ui/server/models.py`.
 
@@ -1005,7 +999,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 ---
 
-## 11. Glossary
+## 10. Glossary
 
 | Term | Meaning |
 |---|---|
@@ -1026,7 +1020,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 ---
 
-## 12. Attachments
+## 11. Attachments
 
 - Repository: https://github.com/taylalm/ad-replicator-pod-agent
 - Package: `deploy/vefaas/dist/ad-replicator-vefaas.zip` (built in C1)
