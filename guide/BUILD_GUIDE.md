@@ -1,17 +1,17 @@
 # Video Ads Replication Agent on BytePlus ModelArk - Build and Maintenance Guide
 
-The **Video Ads Replication Agent** is a BytePlus ModelArk Managed Agent. It takes a proven social video ad and delivers a new, publishable 9:16 ad with AI-generated people and your own personalized product. This guide shows your team how to build the same agent, the web app around it and its storage in your own BytePlus account, and how to run, change and maintain it afterwards.
+The **Video Ads Replication Agent** is a BytePlus ModelArk Managed Agent. It takes a proven social video ad and delivers a new, publishable 9:16 ad with AI-generated people and your own personalized product. This guide shows your team how to build the same agent, the web app around it and its storage in your own BytePlus account, as well as how to run, change and maintain it afterwards.
 
-| If you want to... | Read |
+| Section | Content |
 |---|---|
-| See what it does | 1 Demo, 2 What it does |
-| Understand how it works | 3 How the agent works |
-| Build it in your account | 4 Get the code, 5 Build it (Parts A-D) |
-| Make ads with it | 6 Use it |
-| Change, update and keep it healthy | 7 Maintain it |
-| Look something up | 8 Reference, 9 Validation and limitations, 10 FAQ, 11 Glossary |
-
-The main console screens have screenshots (in `guide/images/`); the other steps are described in the text.
+| 1 | Quick Demo |
+| 2 | What it does |
+| 3 | How the agent works |
+| 4 | Get the code | 
+| 5 | Build guide (Parts A-D) |
+| 6 | Usage guide |
+| 7 | Maintain guide |
+| 8 | Reference, Validation and limitations, FAQ, Glossary |
 
 ---
 
@@ -19,19 +19,7 @@ The main console screens have screenshots (in `guide/images/`); the other steps 
 
 [![Demo video: click to play](images/demo-thumbnail.png)](demo.mp4)
 
-*Demo video (3.5 min, no sound). Click the picture to open it; the file is `guide/demo.mp4`.*
-
-| Time | Chapter |
-|---|---|
-| 0:00 | New video: paste the sample ad's link (a Facebook Reel here, downloaded for you), the product page and a name |
-| 0:31 | Your brief, then the output: length, resolution, on-screen text, video and image models |
-| 0:59 | Reference files, budget, quality checks and approval options; start the run |
-| 1:06 | The run: steps 1-11, outputs as they arrive, paid calls and the raw activity log |
-| 2:14 | Results of a finished project: the new ad plays next to the sample |
-| 2:40 | Captions and inset: edit, time and animate each caption and the photo inset |
-| 2:52 | Clips: the inputs and the exact prompt behind each clip; regenerate one |
-| 3:08 | Quality scorecard (C1-C8), request a revision, download everything |
-| 3:14 | Another finished ad: a kids' Christmas blanket |
+*Click the picture to open it; the file is `guide/demo.mp4`.*
 
 ---
 
@@ -172,10 +160,10 @@ Outputs go to `/mnt/session/outputs/<nn>_<step>/`, and every billable call is lo
 
 ## 4. Get the code
 
-**Repository:** https://github.com/taylalm/dzt-ugc-agent (branch `main`). Fork or import it into your organization's own Git account, so your changes and releases live in one place you control.
+**Repository:** https://github.com/taylalm/ad-replicator-pod-agent (branch `main`). Fork or import it into your organization's own Git account, so your changes and releases live in one place you control.
 
 ```bash
-git clone https://github.com/taylalm/dzt-ugc-agent.git
+git clone https://github.com/taylalm/ad-replicator-pod-agent.git
 ```
 
 | Folder | What it holds | You change it when... |
@@ -992,15 +980,11 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 **Can we use our own models or endpoints?** Yes. The agent model is set on the agent. Image and video models are chosen per run in the New video form; their endpoints are in `ui/server/models.py`.
 
-**Can several people use the web app at once?** Yes. Keep about 3 runs at the same time because of the agent model's rate limit; more queue and resume.
-
 **What happens to a run if the web app restarts?** The run continues in Managed Agents. The new instance rebuilds its project list from the bucket and picks the run up again.
 
 **Can we run the agent without the web app?** Yes. `tools/ma_client.py run --prompt-file <brief>` starts a session with a prompt that names the inputs (SAMPLE_VIDEO, PRODUCT_URL, ...). The outputs are downloaded to `runs/`.
 
 **Why does the agent need the live product page?** The website's own preview is the only source that shows the personalization exactly right. It also makes sure the ad shows options that really exist.
-
-**Can it use a real model's or a customer's face?** No. People are always AI-generated, and Seedance refuses inputs with real people.
 
 **Can captions reuse the sample's words?** No. Captions are always new wording. Only offer lines approved in the brief keep their wording.
 
@@ -1029,7 +1013,7 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 
 ## 12. Attachments
 
-- Repository: https://github.com/taylalm/dzt-ugc-agent
+- Repository: https://github.com/taylalm/ad-replicator-pod-agent
 - Package: `deploy/vefaas/dist/ad-replicator-vefaas.zip` (built in C1)
 - Demo video: section 1
 - Screenshots: `guide/images/`
