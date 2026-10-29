@@ -29,6 +29,10 @@ function address, user names, email addresses and anything confidential.
 | C4-b | `c4b-deployment-history.png` | Deployment history with Roll back (user name blurred). |
 | D1-a | `d1a-create-bucket.png` | Create bucket form. |
 | D1-b | `d1b-bucket-advanced.png` | Advanced settings row. |
+| D2 | `d2-policy-json.png` | Create Policy: name, description and JSON editor (bucket name blurred). |
+| D3-a | `d3a-role-trust.png` | Create New Role, step 1: Services, vefaas, service-associated role unticked. |
+| D3-b | `d3b-role-configure.png` | Create New Role, step 2: role name, display name, description. |
+| D3-c | `d3c-role-authorize.png` | Create New Role, step 3: the bucket policy only, scope Global. |
 | D4-b | `d4b-permission-enabled.png` | Permission section "Enabled" with the role name. |
 | D5-a | `d5-bucket-jobs.png` | Bucket objects: jobs/ folder. |
 | D5-b | `d5b-bucket-project.png` | Inside one project folder. |

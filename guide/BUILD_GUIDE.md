@@ -559,7 +559,7 @@ The function reaches the bucket through an **IAM role**, so there is no long-ter
 ![Advanced settings](images/d1b-bucket-advanced.png)
 *D1-b. **Advanced settings** (click to expand) holds hierarchical namespace, Multi-AZ, default storage type, encryption, log analysis, RenameObject and tags. Check the retention policy is off.*
 
-**D2. Create a permission policy for that bucket only.** IAM > Permission policy > **Create policy** > JSON, name e.g. `AdReplicatorAssetsBucket`:
+**D2. Create a permission policy for that bucket only.** IAM > Permission policy > **Create Policy** > JSON editor. Give it a name, e.g. `AdReplicatorAssetsBucket`, and an optional description, paste this JSON with your bucket name, then **Submit**:
 
 ```json
 {
@@ -579,14 +579,29 @@ The function reaches the bucket through an **IAM role**, so there is no long-ter
 - It allows reading, listing, uploading and deleting files in this one bucket.
 - It cannot touch other buckets or change the bucket itself.
 
-**D3. Create a role the function can use.** IAM > Role management > Role > **Create new role**:
+![Create Policy with the JSON editor](images/d2-policy-json.png)
+*D2. Create Policy: name, description and the JSON (bucket name blurred).*
 
-| Step | Value |
-|---|---|
-| Trusted identity | **Services**, service `vefaas` |
-| Create as a service-associated role | **Unticked** (that system role cannot be customized) |
-| Role name | e.g. `AdReplicatorFunctionRole` |
-| Permissions | Only `AdReplicatorAssetsBucket` (D2) |
+**D3. Create a role the function can use.** IAM > Role management > **Create New Role**, three steps:
+
+| Step | Field | Value |
+|---|---|---|
+| 1 Select trust identity | Trust identity | **Services**, Select service `vefaas` |
+| | Create as a service-associated role | **Unticked** (that system role cannot be customized) |
+| 2 Configure Role | Role name | e.g. `AdReplicatorFunctionRole`; display name and description are optional |
+| 3 Authorize | Choose policy | Only `AdReplicatorAssetsBucket` (D2) |
+| | Scope of action | **Global** |
+
+Then **Submit**.
+
+![Create New Role, step 1](images/d3a-role-trust.png)
+*D3-a. Select trust identity: Services, `vefaas`, service-associated role unticked.*
+
+![Create New Role, step 2](images/d3b-role-configure.png)
+*D3-b. Configure Role: role name, display name and description.*
+
+![Create New Role, step 3](images/d3c-role-authorize.png)
+*D3-c. Authorize: only the bucket policy from D2, scope Global.*
 
 **D4. Bind the role and point the app at the bucket.** veFaaS > your function > Function settings:
 
