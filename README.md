@@ -2,6 +2,8 @@
 
 A BytePlus ModelArk **Managed Agent** that recreates a sample UGC ad with new AI-generated people and your own personalized product, and delivers a finished 9:16 ad. A web app ("Ad Replicator") starts runs, shows the 11 steps live, lets a reviewer approve or change each step, and plays the result next to the sample.
 
+**Full build and maintenance guide:** [guide/BUILD_GUIDE.md](guide/BUILD_GUIDE.md): set up the agent, the web app on veFaaS and TOS storage in your own BytePlus account, step by step, then run and maintain it.
+
 ```
 sample MP4 + product page + brief
   -> 1 analyze the sample            (ugc-video-analyzer)
