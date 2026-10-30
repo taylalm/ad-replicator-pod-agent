@@ -21,7 +21,7 @@ The **Video Ads Replication Agent** is a BytePlus ModelArk Managed Agent. It tak
 
 ### 1.1 Overview
 
-Print-on-demand shops live on short-video ads. A personalized blanket, socks with a child's name or a pet-face balaclava sells best when a buyer sees a real-looking family unwrap *their* version. The ads that already work on TikTok and Reels have proven hooks, pacing and moods. What the shop needs is the same ad again with its own product, its own personalization and new faces, without a shoot.
+E-commerce live on short-video ads. A personalized blanket, socks with a child's name or a pet-face balaclava sells best when a buyer sees a real-looking family unwrap *their* version. The ads that already work on TikTok and Reels have proven hooks, pacing and moods. What the shop needs is the same ad again with its own product, its own personalization and new faces, without a shoot.
 
 Given a sample ad and a product page, the agent:
 - analyses the sample
@@ -105,8 +105,6 @@ An independent evaluator scores each criterion from 1 to 5, with evidence:
 
 ## 2. How the agent works
 
-### 2.1 The 11 steps
-
 The agent runs eleven steps and reports each with a fixed line that the web app reads:
 ```
 STEP n/11: name - started|done|failed
@@ -126,29 +124,6 @@ Outputs go to `/mnt/session/outputs/<nn>_<step>/`, and every billable call is lo
 | 9 quality-check | ugc-quality-gate | Separate evaluator scores C1-C8, lists hard failures | `report_round_<n>` | PASS / FAIL with routing |
 | 10 retries | (routing) | Only the routed step runs again, then 8 and 9 | Round n+1 | Max 3 rounds |
 | 11 deliver | (model) | Copy final, master, frames; write the report | `final.mp4`, `final_clean.mp4`, `report.md` | Verdict, scores, paid calls |
-
-### 2.2 Design decisions that made it work
-
-- **The product comes from the live website.**
-  - A model invents product details: which side carries the name, the portrait size, the leg pattern.
-  - Pasting the product image onto a generated frame looks flat once it moves.
-  - So the agent uses the shop's own renderer. The captured preview is the product reference for every still and clip, and the truth every check compares against.
-  - The agent writes one `product.spec` sentence and pastes it unchanged into every prompt. Reworded specs once contradicted each other and caused 17 extra video tasks.
-- **Some scenes start from a still.**
-  - When the sample's setup matters (a driver leaning out of a car window), the agent makes a still from the sample's own staging frame, checks it against that frame, then animates it.
-  - Stills never contain pasted artwork.
-  - Shots with several personalized items use one image edit per product, then merge them.
-- **Batch generation around the 120-second tool limit.**
-  - A sandbox tool call ends after 120 s, and a clip takes minutes.
-  - So the skills submit all clips at once and keep a background poller; the agent calls `wait` again until nothing is pending.
-  - This roughly halved the clip step.
-- **An independent evaluator, not self-review.**
-  - The agent model's own review missed layout problems.
-  - A separate vision model (Seed 2.0 lite) scores the ad and checks every clip.
-  - For physics, the model reports per-frame tracks and a script applies the rules: walking backwards, vanishing, size jumps, sliding, hands.
-- **Rules where they hold.**
-  - Judgment rules live in the system prompt.
-  - Anything that can be checked mechanically lives in a skill script: prompt validation, caption originality, file names, budget logging.
 
 ---
 
